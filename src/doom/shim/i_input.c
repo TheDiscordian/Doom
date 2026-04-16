@@ -2,8 +2,8 @@
  *
  * Button mapping (gamepad-friendly):
  *   D-pad        -> arrow keys
- *   A            -> CTRL   (fire)
- *   B            -> SPACE  (use)
+ *   A            -> ENTER  (menu confirm / fire via key bind)
+ *   B            -> BACKSPACE (menu back / use via key bind)
  *   X            -> SHIFT  (run)
  *   Y            -> ALT    (strafe)
  *   L1 / R1      -> weapon prev / next (',' / '.')
@@ -27,8 +27,8 @@ static const btn_map_t BTN_MAP[] = {
     { OF_BTN_DOWN,   KEY_DOWNARROW  },
     { OF_BTN_LEFT,   KEY_LEFTARROW  },
     { OF_BTN_RIGHT,  KEY_RIGHTARROW },
-    { OF_BTN_A,      KEY_RCTRL      },
-    { OF_BTN_B,      ' '            },
+    { OF_BTN_A,      KEY_ENTER      },
+    { OF_BTN_B,      KEY_BACKSPACE  },
     { OF_BTN_X,      KEY_RSHIFT     },
     { OF_BTN_Y,      KEY_RALT       },
     { OF_BTN_L1,     ','            },

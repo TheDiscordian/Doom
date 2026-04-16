@@ -1,9 +1,9 @@
 /* i_video.c — chocolate-doom video backend over openfpgaOS SDK.
  *
  * Doom renders into a 320x200 indexed buffer (I_VideoBuffer).  The
- * openfpgaOS framebuffer is 320x240.  We upscale by letterboxing: the
- * 200-pixel doom image is centered in the 240-line output with 20px of
- * black above and below.
+ * openfpgaOS framebuffer is 320x240.  We blit the 200-line doom image
+ * into the center of the 240-line output; the 20-pixel letterbox bars
+ * are cleared once at init across all three back buffers.
  */
 
 #include "config.h"
@@ -17,6 +17,7 @@
 #include "m_config.h"
 #include "m_misc.h"
 #include "z_zone.h"
+#include "m_controls.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -34,7 +35,7 @@ pixel_t *I_VideoBuffer           = NULL;
 int     screen_width             = SCREENWIDTH;
 int     screen_height            = SCREENHEIGHT;
 int     fullscreen               = 1;
-int     aspect_ratio_correct     = 0;   /* we letterbox instead */
+int     aspect_ratio_correct     = 0;
 int     integer_scaling          = 1;
 int     smooth_pixel_scaling     = 0;
 int     vga_porch_flash          = 0;
@@ -56,18 +57,19 @@ static const byte gammatable[5][256] = {
      193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,
      217,218,219,220,221,222,223,224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,
      241,242,243,244,245,246,247,248,249,250,251,252,253,254,255,255}
-    /* The other four tables are unused unless usegamma != 0; keep them
-     * at table 0 for now — adds brightness variants later if wanted. */
 };
 
 /* Palette storage (doom hands us 256 × RGB 0-255 triplets). */
 static uint32_t palette32[256];
 
-/* Allocated backbuffer: Doom's 320x200 indexed buffer. */
+/* Stable backbuffer: doom renders here every frame.  Content persists
+ * across frames (border, HUD, wipe state) as doom expects. */
 static pixel_t video_buf[SCREENWIDTH * SCREENHEIGHT];
 
 /* Grab-mouse callback (ignored on this backend). */
 static grabmouse_callback_t grabmouse_cb;
+
+#define LETTERBOX_Y  ((OF_SCREEN_H - SCREENHEIGHT) / 2)
 
 /* ---- Init / shutdown ------------------------------------------------- */
 
@@ -76,11 +78,23 @@ void I_InitGraphics(void)
     of_video_init();
     of_video_set_display_mode(OF_DISPLAY_FRAMEBUFFER);
     of_video_set_color_mode(OF_VIDEO_MODE_8BIT);
-    of_video_clear(0);
+
+    /* Clear letterbox bars on all three back buffers once. */
+    for (int buf = 0; buf < 3; buf++) {
+        uint8_t *fb = of_video_surface();
+        memset(fb, 0, OF_SCREEN_W * OF_SCREEN_H);
+        of_video_flip();
+    }
 
     I_VideoBuffer = video_buf;
     V_RestoreBuffer();
     screenvisible = true;
+
+    key_fire = KEY_ENTER;
+    key_use  = KEY_BACKSPACE;
+    key_prevweapon = ',';
+    key_nextweapon = '.';
+    key_message_refresh = 0;
 }
 
 void I_GraphicsCheckCommandLine(void) { }
@@ -96,7 +110,8 @@ void I_DisplayFPSDots(boolean dots_on) { (void)dots_on; }
 void I_EnableLoadingDisk(int xoffs, int yoffs) { (void)xoffs; (void)yoffs; }
 void I_BeginRead(void)                 { }
 void I_StartFrame(void)                { }
-void I_StartTic(void)                  { /* input polling done in I_FinishUpdate */ }
+extern void I_PollInput(void);
+void I_StartTic(void)                  { I_PollInput(); }
 
 void I_GetWindowPosition(int *x, int *y, int w, int h)
 {
@@ -107,14 +122,13 @@ void I_GetWindowPosition(int *x, int *y, int w, int h)
 
 void I_BindVideoVariables(void)
 {
-    /* The core reads these on startup; we just need them to exist. */
     M_BindIntVariable("use_mouse",               &usemouse);
     M_BindIntVariable("fullscreen",              &fullscreen);
     M_BindIntVariable("aspect_ratio_correct",    &aspect_ratio_correct);
     M_BindIntVariable("integer_scaling",         &integer_scaling);
     M_BindIntVariable("vga_porch_flash",         &vga_porch_flash);
     M_BindIntVariable("smooth_pixel_scaling",    &smooth_pixel_scaling);
-    M_BindIntVariable("startup_delay",           (int[]){0});  /* unused */
+    M_BindIntVariable("startup_delay",           (int[]){0});
     M_BindIntVariable("fullscreen_width",        &screen_width);
     M_BindIntVariable("fullscreen_height",       &screen_height);
     M_BindIntVariable("force_software_renderer", &force_software_renderer);
@@ -162,11 +176,9 @@ void I_UpdateNoBlit(void) { }
 
 void I_FinishUpdate(void)
 {
-    /* Letterbox 320x200 -> 320x240 (20-line black bars top and bottom). */
     uint8_t *fb = of_video_surface();
-    memset(fb, 0, 320 * 20);
-    memcpy(fb + 320 * 20, I_VideoBuffer, SCREENWIDTH * SCREENHEIGHT);
-    memset(fb + 320 * (20 + SCREENHEIGHT), 0, 320 * 20);
+    memcpy(fb + OF_SCREEN_W * LETTERBOX_Y, I_VideoBuffer,
+           SCREENWIDTH * SCREENHEIGHT);
     of_video_flip();
 }
 
