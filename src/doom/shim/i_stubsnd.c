@@ -9,6 +9,7 @@
 #include "i_sound.h"
 #include "doomtype.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -49,7 +50,120 @@ const sound_module_t sound_pcsound_module = {
     pc_SoundIsPlaying, pc_CacheSounds,
 };
 
-/* ---- Silent music modules ------------------------------------------- */
+/* ---- openfpgaOS MIDI music module (OPL slot) ------------------------ */
+
+#include "of.h"
+#include "of_midi.h"
+#include "of_smp_bank.h"
+#include "of_smp_voice.h"
+#include "of_awe.h"
+#include "memio.h"
+#include "mus2mid.h"
+
+typedef struct {
+    void    *midi_data;
+    size_t   midi_len;
+} of_song_t;
+
+static boolean opl_Init(void)
+{
+    of_audio_init();
+    int rc = of_midi_init();
+    /* DEBUG: AWE backend ON with hw_envelope ON (full per-tick fabric).
+     * Test bank in doom.json — swap to bank.ofsf (SC-55) to see if
+     * AWE sounds correct on a smaller proven bank. */
+    smp_voice_enable_awe_backend(1);
+    printf("MIDI: opl_Init AWE=on hw_env=on full\n");
+    return rc == OF_MIDI_OK;
+}
+
+static void opl_Shutdown(void) { of_midi_stop(); }
+
+static void opl_SetVolume(int vol)
+{
+    of_midi_set_volume((vol * 255) / 127);
+}
+
+static void opl_Pause(void)  { of_midi_pause(); }
+static void opl_Resume(void) { of_midi_resume(); }
+
+static void *opl_RegisterSong(void *data, int len)
+{
+    of_song_t *song = malloc(sizeof(*song));
+    if (!song) return NULL;
+
+    if (len >= 4 && memcmp(data, "MThd", 4) == 0) {
+        song->midi_data = malloc(len);
+        if (!song->midi_data) { free(song); return NULL; }
+        memcpy(song->midi_data, data, len);
+        song->midi_len = len;
+    } else {
+        /* mus2mid() returns 0 on success, non-zero on failure (Unix
+         * convention — not a boolean). */
+        MEMFILE *in  = mem_fopen_read(data, len);
+        MEMFILE *out = mem_fopen_write();
+        if (!in || !out || mus2mid(in, out) != 0) {
+            if (in)  mem_fclose(in);
+            if (out) mem_fclose(out);
+            free(song);
+            return NULL;
+        }
+        mem_fclose(in);
+
+        /* mem_get_buf hands back a pointer INTO the MEMFILE's internal
+         * buffer — and mem_fclose() Z_Free's that buffer immediately
+         * after.  of_midi_play stores the pointer for the ISR to read
+         * asynchronously, so we must copy the MIDI to our own malloc'd
+         * storage before closing the stream, otherwise the 500 Hz ISR
+         * is reading freed memory and eventually traps. */
+        void   *tmp_buf;
+        size_t  tmp_len;
+        mem_get_buf(out, &tmp_buf, &tmp_len);
+        song->midi_data = malloc(tmp_len);
+        if (!song->midi_data) { mem_fclose(out); free(song); return NULL; }
+        memcpy(song->midi_data, tmp_buf, tmp_len);
+        song->midi_len = tmp_len;
+        mem_fclose(out);
+    }
+
+    return song;
+}
+
+static void opl_UnRegisterSong(void *handle)
+{
+    of_song_t *song = handle;
+    if (!song) return;
+    free(song->midi_data);
+    free(song);
+}
+
+static void opl_PlaySong(void *handle, boolean looping)
+{
+    of_song_t *song = handle;
+    if (!song) { printf("MIDI: PlaySong NULL handle\n"); return; }
+    int rc = of_midi_play(song->midi_data, song->midi_len, looping);
+    printf("MIDI: PlaySong rc=%d len=%zu loop=%d\n", rc, song->midi_len, looping);
+}
+
+static void    opl_StopSong(void)    { of_midi_stop(); }
+static boolean opl_IsPlaying(void)   { return of_midi_playing(); }
+
+/* MIDI is pumped by a 500 Hz machine-timer ISR installed by of_midi_play,
+ * so Poll is a no-op — main-thread pumping would race the ISR. */
+static void    opl_Poll(void) { }
+
+static const snddevice_t opl_devs[] = { SNDDEVICE_SB, SNDDEVICE_PAS,
+                                         SNDDEVICE_ADLIB };
+
+const music_module_t music_opl_module = {
+    opl_devs, sizeof(opl_devs)/sizeof(*opl_devs),
+    opl_Init, opl_Shutdown, opl_SetVolume,
+    opl_Pause, opl_Resume,
+    opl_RegisterSong, opl_UnRegisterSong,
+    opl_PlaySong, opl_StopSong, opl_IsPlaying, opl_Poll
+};
+
+/* ---- Silent stub modules for the rest ------------------------------- */
 
 static boolean mus_Init(void)                { return true; }
 static void    mus_Shutdown(void)            { }
@@ -63,11 +177,17 @@ static void    mus_Stop(void)                { }
 static boolean mus_IsPlaying(void)           { return false; }
 static void    mus_Poll(void)                { }
 
+/* Pack-module stubs: *must* report "no substitution available" so that
+ * I_RegisterSong falls back to music_module (our OPL module).  If the
+ * pack module returns a non-NULL handle from RegisterSong, i_sound.c
+ * sets active_music_module = &music_pack_module and every subsequent
+ * PlaySong goes to the silent pack_Play stub — which is why music was
+ * inaudible even though music_opl_module had initialised cleanly. */
+static void *pack_Register(void *d, int l)   { (void)d; (void)l; return NULL; }
+
 static const snddevice_t midi_devs[]   = { SNDDEVICE_GENMIDI,
                                            SNDDEVICE_WAVEBLASTER,
                                            SNDDEVICE_SOUNDCANVAS };
-static const snddevice_t opl_devs[]    = { SNDDEVICE_SB, SNDDEVICE_PAS,
-                                           SNDDEVICE_ADLIB };
 static const snddevice_t pack_devs[]   = { SNDDEVICE_GENMIDI,
                                            SNDDEVICE_WAVEBLASTER,
                                            SNDDEVICE_SOUNDCANVAS };
@@ -83,14 +203,16 @@ static const snddevice_t fsynth_devs[] = { SNDDEVICE_GENMIDI };
     }
 
 MUS_MOD(music_sdl_module,  midi_devs);
-MUS_MOD(music_opl_module,  opl_devs);
-MUS_MOD(music_pack_module, pack_devs);
 MUS_MOD(music_fl_module,   fsynth_devs);
-#ifdef _WIN32
 MUS_MOD(music_win_module,  midi_devs);
-#else
-MUS_MOD(music_win_module,  midi_devs);
-#endif
+
+const music_module_t music_pack_module = {
+    pack_devs, sizeof(pack_devs)/sizeof(*pack_devs),
+    mus_Init, mus_Shutdown, mus_SetVolume,
+    mus_Pause, mus_Resume,
+    pack_Register, mus_UnRegister,
+    mus_Play, mus_Stop, mus_IsPlaying, mus_Poll
+};
 
 void I_InitTimidityConfig(void) { }
 void I_SetOPLDriverVer(opl_driver_ver_t v) { (void)v; }

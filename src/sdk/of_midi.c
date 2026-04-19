@@ -11,6 +11,7 @@
 #include "include/of_smp_bank.h"
 #include "include/of_smp_voice.h"
 #include "include/of_timer.h"
+#include "include/of_services.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -78,10 +79,10 @@ static uint32_t rd32(const uint8_t *p) {
 static uint32_t read_var(midi_track_t *t) {
     uint32_t val = 0;
     const uint8_t *d = t->data;
-    while (t->pos < t->len) {
+    for (int i = 0; i < 4 && t->pos < t->len; i++) {
         uint8_t b = d[t->pos++];
         val = (val << 7) | (b & 0x7F);
-        if (!(b & 0x80)) break;
+        if (!(b & 0x80)) return val;
     }
     return val;
 }
@@ -147,6 +148,12 @@ static void control_change(int ch, int cc, int val) {
         M.brightness[ch] = (uint8_t)val;
         smp_voice_update_filter(ch, val, M.resonance[ch]);
         break;
+    case 91: /* Reverb send (CC91) */
+        smp_voice_update_reverb_send(ch, val);
+        break;
+    case 93: /* Chorus send (CC93) */
+        smp_voice_update_chorus_send(ch, val);
+        break;
     case 120: /* All Sound Off */
     case 123: /* All Notes Off */
         smp_voice_all_off(ch);
@@ -166,6 +173,11 @@ static void control_change(int ch, int cc, int val) {
  * SMF track processor
  * ======================================================================== */
 
+static inline int trk_need(midi_track_t *t, uint32_t n) {
+    if (t->pos + n > t->len) { t->done = 1; return 0; }
+    return 1;
+}
+
 static int process_event(midi_track_t *t) {
     if (t->done || t->pos >= t->len)
         return 0;
@@ -173,6 +185,7 @@ static int process_event(midi_track_t *t) {
     uint8_t status = t->data[t->pos];
     if (status < 0x80) {
         status = t->running;
+        if (status == 0) { t->done = 1; return 0; }
     } else {
         t->pos++;
         if (status < 0xF0)
@@ -184,10 +197,11 @@ static int process_event(midi_track_t *t) {
 
     if (status == 0xFF) {
         /* Meta event */
+        if (!trk_need(t, 1)) return 0;
         uint8_t meta = t->data[t->pos++];
         uint32_t mlen = read_var(t);
+        if (mlen > t->len - t->pos) { t->done = 1; return 0; }
         if (meta == 0x51 && mlen == 3) {
-            /* Tempo change */
             M.us_per_beat = ((uint32_t)t->data[t->pos] << 16) |
                             ((uint32_t)t->data[t->pos+1] << 8) |
                             t->data[t->pos+2];
@@ -198,33 +212,42 @@ static int process_event(midi_track_t *t) {
     } else if (status >= 0xF0 && status <= 0xF7) {
         /* SysEx */
         uint32_t slen = read_var(t);
+        if (slen > t->len - t->pos) { t->done = 1; return 0; }
         t->pos += slen;
     } else if (cmd == 0x90) {
+        if (!trk_need(t, 2)) return 0;
         uint8_t note = t->data[t->pos++];
         uint8_t vel  = t->data[t->pos++];
         if (vel > 0) note_on(ch, note, vel);
         else         smp_voice_note_off(ch, note);
     } else if (cmd == 0x80) {
+        if (!trk_need(t, 2)) return 0;
         uint8_t note = t->data[t->pos++];
-        t->pos++;  /* release velocity ignored */
+        t->pos++;
         smp_voice_note_off(ch, note);
     } else if (cmd == 0xC0) {
+        if (!trk_need(t, 1)) return 0;
         M.program[ch] = t->data[t->pos++];
     } else if (cmd == 0xB0) {
+        if (!trk_need(t, 2)) return 0;
         uint8_t cc  = t->data[t->pos++];
         uint8_t val = t->data[t->pos++];
         control_change(ch, cc, val);
     } else if (cmd == 0xE0) {
+        if (!trk_need(t, 2)) return 0;
         uint8_t lsb = t->data[t->pos++];
         uint8_t msb = t->data[t->pos++];
         int16_t bend = (int16_t)(((uint16_t)msb << 7) | lsb) - 8192;
         smp_voice_update_bend(ch, bend);
     } else if (cmd == 0xD0) {
-        t->pos += 1;  /* channel pressure — ignored */
+        if (!trk_need(t, 1)) return 0;
+        t->pos += 1;
     } else if (cmd == 0xA0) {
-        t->pos += 2;  /* polyphonic key pressure — ignored */
+        if (!trk_need(t, 2)) return 0;
+        t->pos += 2;
     } else {
-        t->pos += 2;  /* unknown — skip 2 bytes */
+        if (!trk_need(t, 2)) return 0;
+        t->pos += 2;
     }
 
     return !t->done;
@@ -305,7 +328,15 @@ int of_midi_init(void) {
     M.playing       = 0;
     M.paused        = 0;
     M.tick_accum_us = 0;
-    M.master_volume = 255;
+    /* Default below full-scale to give the HW mixer headroom for dense
+     * polyphony.  audio_mixer.v sums voices into a 32-bit accumulator and
+     * shifts ÷4 before clamping to int16 — about 6 voices at vol=180 fill
+     * the range.  With SF2 polyphony routinely 20-28 voices, master=255
+     * hard-clips at peaks and sounds like occasional voice "breakup".
+     * 128 quarters per-voice peak output (via the HW log² curve) so
+     * roughly 4× more concurrent voices fit without clipping.  Apps can
+     * raise it with of_midi_set_volume() if they know polyphony is low. */
+    M.master_volume = 128;
     smp_voice_set_master_volume(M.master_volume);
     return OF_MIDI_OK;
 }
@@ -329,10 +360,20 @@ int of_midi_play(const uint8_t *data, uint32_t len, int loop) {
     M.playing      = 1;
     M.paused       = 0;
     M.last_pump_us = of_time_us();
+
+    /* DEBUG: 100 Hz still hangs occasionally (~3 demo loops between
+     * crashes).  Drop to 50 Hz to test whether even fewer trap entries
+     * eliminates the accumulation.  Combined with the 2 ms PUMP_BUDGET_US
+     * cap below, total ISR CPU load is at most 50 × 2 ms = 100 ms/sec
+     * = 10 % CPU. */
+    of_timer_set_callback(of_midi_pump, 50);
     return OF_MIDI_OK;
 }
 
 void of_midi_stop(void) {
+    /* Detach the ISR before mutating state — otherwise the ISR could
+     * preempt mid-teardown and race on M.playing / voice state. */
+    of_timer_set_callback(NULL, 0);
     smp_voice_all_off_global();
     M.playing = 0;
     M.paused  = 0;
@@ -352,20 +393,47 @@ void of_midi_resume(void) {
 void of_midi_pump(void) {
     if (!M.playing || M.paused) return;
 
-    uint32_t now = of_time_us();
+    /* Called from the machine-timer ISR.  DO NOT use of_time_us() here
+     * — it issues an ECALL which triggers a nested trap, clobbering
+     * mscratch + the existing trap frame and hanging the CPU.  Read
+     * the monotonic timer via the direct service-table pointer
+     * instead; it reads the cycle CSR in-line from M-mode. */
+    uint32_t now = OF_SVC->timer_get_us();
     int64_t elapsed = (int64_t)(now - M.last_pump_us);
     M.last_pump_us = now;
 
-    /* Clamp to avoid huge jumps (e.g., after a long pause) */
     if (elapsed > 500000) elapsed = 500000;
 
-    /* Always tick envelopes at 1 kHz, even if no events are pending. */
     if (elapsed > 0) {
         M.tick_accum_us += (uint32_t)elapsed;
-        while (M.tick_accum_us >= 1000) {
+
+        /* OVERRUN GUARD.  Cap the ENTIRE pump call (envelope ticks +
+         * MIDI event dispatch below) to PUMP_BUDGET_US of wall-clock
+         * work.  Both loops re-check the budget every iteration; on
+         * overrun we drop unprocessed envelope accumulation AND stop
+         * dispatching MIDI events for this call.  Avoids ISR-monopoly
+         * starvation of the main thread. */
+        const uint32_t PUMP_BUDGET_US = 2000;   /* 2 ms hard cap */
+        uint32_t pump_start_us = OF_SVC->timer_get_us();
+
+        int tick_budget = 250;
+        int ticks_fired = 0;
+        int overrun = 0;
+        while (M.tick_accum_us >= 2000 && tick_budget > 0) {
             smp_voice_tick();
-            M.tick_accum_us -= 1000;
+            M.tick_accum_us -= 2000;
+            tick_budget--;
+            ticks_fired++;
+            if ((OF_SVC->timer_get_us() - pump_start_us) > PUMP_BUDGET_US) {
+                overrun = 1;
+                break;
+            }
         }
+        int budget_exceeded = (tick_budget == 0) || overrun;
+        if (budget_exceeded)
+            M.tick_accum_us = 0;
+        smp_voice_tick_record_pump((uint32_t)elapsed, ticks_fired,
+                                   budget_exceeded);
 
         int any_active = 0;
         for (int i = 0; i < M.num_tracks; i++) {
@@ -382,15 +450,23 @@ void of_midi_pump(void) {
                 process_event(t);
                 if (!t->done) read_next_delta(t);
                 safety--;
+                /* Same overrun cap as the envelope loop.  Pending MIDI
+                 * events stay queued (their pending_us is still <=0)
+                 * so the next pump call picks them up — no notes lost,
+                 * just delayed. */
+                if ((OF_SVC->timer_get_us() - pump_start_us) > PUMP_BUDGET_US)
+                    goto pump_done;
             }
         }
+        pump_done: ;
 
         if (!any_active) {
             if (M.looping) {
                 smp_voice_all_off_global();
                 reset_channels();
                 reset_tracks();
-                M.last_pump_us = of_time_us();
+                /* ISR context — no ECALL, see note in of_midi_pump. */
+                M.last_pump_us = OF_SVC->timer_get_us();
             } else {
                 smp_voice_all_off_global();
                 M.playing = 0;
@@ -408,4 +484,9 @@ void of_midi_set_volume(int volume) {
     if (volume > 255) volume = 255;
     M.master_volume = volume;
     smp_voice_set_master_volume(volume);
+}
+
+int of_midi_get_program(int ch) {
+    if (ch < 0 || ch > 15) return 0;
+    return M.program[ch];
 }

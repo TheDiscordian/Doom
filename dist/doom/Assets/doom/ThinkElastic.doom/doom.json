@@ -6,7 +6,7 @@
             { "id": 1, "filename": "os.bin" },
             { "id": 2, "filename": "doom.elf" },
             { "id": 3, "filename": "DOOM.WAD" },
-            { "id": 7, "filename": "bank.ofsf" },
+            { "id": 4, "filename": "bank.ofsf" },
             { "id": 10, "filename": "doom.sav" }
         ]
     }

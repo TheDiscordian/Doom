@@ -30,10 +30,13 @@ RUNTIME   = $(ROOT)/runtime
 
 # ── Sources ────────────────────────────────────────────────────────────
 SHIM_SRCS   = $(wildcard shim/*.c)
-CDOOM_SRCS  = $(filter-out cdoom/w_file_win32.c,$(wildcard cdoom/*.c))
+CDOOM_SRCS  = $(filter-out cdoom/w_file_win32.c cdoom/z_native.c,$(wildcard cdoom/*.c))
 DOOM_SRCS   = $(wildcard cdoom/doom/*.c)
 
-SRCS        = $(SHIM_SRCS) $(CDOOM_SRCS) $(DOOM_SRCS)
+SDK_MIDI    = $(SDK_DIR)/of_midi.c $(SDK_DIR)/of_smp_voice.c \
+              $(SDK_DIR)/of_smp_bank.c $(SDK_DIR)/of_smp_tables.c
+
+SRCS        = $(SHIM_SRCS) $(CDOOM_SRCS) $(DOOM_SRCS) $(SDK_MIDI)
 SRCS_CXX    =
 
 # ── Per-app CFLAGS (applied on top of sdk.mk SDK_CFLAGS) ──────────────
@@ -63,6 +66,7 @@ release: $(OBJ_DIR)/app.elf
 	@cp $(RUNTIME)/bitstream.rbf_r $(RUNTIME)/loader.bin $$(ls -d $(OUT)/Cores/*/)/
 	@mkdir -p $$(ls -d $(OUT)/Assets/*/)/common
 	@cp $(RUNTIME)/os.bin $$(ls -d $(OUT)/Assets/*/)/common/
+	@cp $(RUNTIME)/bank.ofsf $$(ls -d $(OUT)/Assets/*/)/common/ 2>/dev/null || true
 	@cp $< $$(ls -d $(OUT)/Assets/*/)/common/$(APP).elf
 	@for f in *.wad *.dat; do [ -f "$$f" ] && cp "$$f" $$(ls -d $(OUT)/Assets/*/)/common/; done 2>/dev/null; true
 	@echo "Ready: build/$(APP)/"
