@@ -183,12 +183,20 @@ P_TeleportMove
     P_UnsetThingPosition (thing);
 
     thing->floorz = tmfloorz;
-    thing->ceilingz = tmceilingz;	
+    thing->ceilingz = tmceilingz;
     thing->x = x;
     thing->y = y;
 
+    // Interpolation: snap old* to the teleport destination so the renderer
+    // doesn't lerp across the jump (which would look like a blur through
+    // geometry). The old-angle is intentionally preserved because teleport
+    // destination angle is set by the caller after this returns.
+    thing->oldx = x;
+    thing->oldy = y;
+    thing->oldz = thing->z;
+
     P_SetThingPosition (thing);
-	
+
     return true;
 }
 

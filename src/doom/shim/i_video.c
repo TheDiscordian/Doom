@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 /* Public globals expected by chocolate-doom core. */
 char *video_driver    = "";
@@ -176,6 +177,33 @@ void I_UpdateNoBlit(void) { }
 
 void I_FinishUpdate(void)
 {
+    /* Pace the main loop to ~60 Hz.
+     *
+     * Before uncapped interpolation landed, TryRunTics() blocked ~28 ms
+     * per iteration waiting for the next 35 Hz tic — that was the only
+     * thing keeping the loop from running at CPU speed, because
+     * of_video_flip() is non-blocking.
+     *
+     * With the uncapped path, TryRunTics() returns immediately when no
+     * new tic is ready. Without a wait here the main loop busy-spins at
+     * CPU speed, which starves audio/IRQ handling enough to appear as a
+     * freeze with a stuck buzzing sound effect when the menu sfx fires.
+     *
+     * We use usleep() (which on target is a syscall-based yield that
+     * lets interrupts run, unlike I_Sleep's busy spin) to throttle the
+     * loop before the blit so the frame is only produced at display
+     * rate.  Game logic is still wall-clock driven, so this doesn't
+     * slow gameplay — TryRunTics just runs a batch of tics per frame
+     * when needed. */
+    static unsigned int last_flip_us = 0;
+    const unsigned int  target_us    = 16667;  /* ~60 Hz */
+    unsigned int now = of_time_us();
+    unsigned int dt  = now - last_flip_us;
+    if (last_flip_us && dt < target_us) {
+        usleep(target_us - dt);
+    }
+    last_flip_us = of_time_us();
+
     uint8_t *fb = of_video_surface();
     memcpy(fb + OF_SCREEN_W * LETTERBOX_Y, I_VideoBuffer,
            SCREENWIDTH * SCREENHEIGHT);

@@ -315,8 +315,16 @@ void of_video_init(void) {
             SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
             OF_SCREEN_W * 3, OF_SCREEN_H * 3,
             SDL_WINDOW_RESIZABLE);
-        g_renderer = SDL_CreateRenderer(g_window, -1,
-            SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        /* VSync default: on. Apps that pace themselves (e.g. 35 Hz Doom
+         * on a 60 Hz display, where hard vsync would snap each frame
+         * to a 16.67 ms boundary and effectively render at 30 Hz) can
+         * disable it by exporting OF_NO_VSYNC=1 before of_video_init.
+         * Tic-rate pacing from the app then drives the cadence. */
+        const char *no_vsync = getenv("OF_NO_VSYNC");
+        uint32_t rflags = SDL_RENDERER_ACCELERATED;
+        if (!no_vsync || no_vsync[0] == '0')
+            rflags |= SDL_RENDERER_PRESENTVSYNC;
+        g_renderer = SDL_CreateRenderer(g_window, -1, rflags);
         SDL_RenderSetLogicalSize(g_renderer, OF_SCREEN_W, OF_SCREEN_H);
         SDL_RenderSetIntegerScale(g_renderer, SDL_TRUE);
         g_texture = SDL_CreateTexture(g_renderer,
@@ -1029,6 +1037,11 @@ void of_mixer_set_master_volume(int volume) {
 void of_mixer_set_filter(int voice, int cutoff_q016, int q, int enable) {
     (void)voice; (void)cutoff_q016; (void)q; (void)enable;
     /* Filter not modeled on PC — no-op. */
+}
+
+void of_mixer_commit(void) {
+    /* Target uses double-buffered voice slots; on PC the mutex in the
+     * audio callback provides the same atomicity, so commit is a no-op. */
 }
 
 /* MIDI playback: provided by of_midi.c (shared across targets). */

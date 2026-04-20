@@ -34,6 +34,10 @@ void I_Init (void);
 // for the zone management.
 byte*	I_ZoneBase (int *size);
 
+// Returns non-zero if the zone canaries are intact; prints a diagnostic
+// and returns zero on first mismatch. openfpgaOS port only.
+int     I_CheckZoneCanaries(void);
+
 boolean I_ConsoleStdout(void);
 
 

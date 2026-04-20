@@ -275,8 +275,20 @@ typedef struct mobj_s
     mapthing_t		spawnpoint;	
 
     // Thing being chased/attacked for tracers.
-    struct mobj_s*	tracer;	
-    
+    struct mobj_s*	tracer;
+
+    // --- Interpolation support (uncapped framerate) ---
+    // Snapshot of x/y/z/angle at the start of the most recent tic. The
+    // renderer lerps between (old*, current) by fractionaltic so sprites
+    // move smoothly between 35 Hz simulation steps.
+    // Not serialized — reset to match x/y/z/angle on savegame load and
+    // whenever a thing teleports or spawns so we never interpolate across
+    // discontinuities.
+    fixed_t		oldx;
+    fixed_t		oldy;
+    fixed_t		oldz;
+    angle_t		oldangle;
+
 } mobj_t;
 
 

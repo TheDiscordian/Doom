@@ -28,6 +28,7 @@
 #include "m_argv.h"
 #include "m_misc.h"
 
+#include "z_zone.h"
 #include "net_client.h"
 #include "net_common.h"
 #include "net_defs.h"
@@ -1329,11 +1330,16 @@ static void NET_SV_ParseGameDataACK(net_packet_t *packet, net_client_t *client)
     }
 }
 
-static void NET_SV_SendTics(net_client_t *client, 
+static void NET_SV_SendTics(net_client_t *client,
                             unsigned int start, unsigned int end)
 {
     net_packet_t *packet;
     unsigned int i;
+
+    /* Canary/heap check at the top of the tic-send path — this is where
+     * the NET_WriteInt8 mcause=4 crash appears, and catching corruption
+     * one jal earlier gives us a blast-radius reading. */
+    Z_CheckHeap();
 
     packet = NET_NewPacket(500);
 

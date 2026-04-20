@@ -1466,11 +1466,16 @@ void P_UnArchivePlayers (void)
 	saveg_read_pad();
 
         saveg_read_player_t(&players[i]);
-	
+
 	// will be set when unarc thinker
-	players[i].mo = NULL;	
+	players[i].mo = NULL;
 	players[i].message = NULL;
 	players[i].attacker = NULL;
+
+	// Interpolation: savegame format has no oldviewz. Snap it to viewz
+	// so the first post-load render doesn't lerp from uninitialized
+	// memory. (Per-mobj old* are handled in P_UnArchiveThinkers.)
+	players[i].oldviewz = players[i].viewz;
     }
 }
 
@@ -1657,6 +1662,13 @@ void P_UnArchiveThinkers (void)
 	    mobj->floorz = mobj->subsector->sector->floorheight;
 	    mobj->ceilingz = mobj->subsector->sector->ceilingheight;
 	    mobj->thinker.function.acp1 = (actionf_p1)P_MobjThinker;
+	    // Interpolation: savegame format has no old* fields. Snap them
+	    // to the loaded position so the first post-load render doesn't
+	    // lerp from uninitialized memory.
+	    mobj->oldx     = mobj->x;
+	    mobj->oldy     = mobj->y;
+	    mobj->oldz     = mobj->z;
+	    mobj->oldangle = mobj->angle;
 	    P_AddThinker (&mobj->thinker);
 	    break;
 

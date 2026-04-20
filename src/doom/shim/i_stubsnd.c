@@ -54,6 +54,7 @@ const sound_module_t sound_pcsound_module = {
 
 #include "of.h"
 #include "of_midi.h"
+#include "of_mixer.h"
 #include "of_smp_bank.h"
 #include "of_smp_voice.h"
 #include "of_awe.h"
@@ -68,12 +69,28 @@ typedef struct {
 static boolean opl_Init(void)
 {
     of_audio_init();
+    of_mixer_init(32, 48000);
+
     int rc = of_midi_init();
-    /* DEBUG: AWE backend ON with hw_envelope ON (full per-tick fabric).
-     * Test bank in doom.json — swap to bank.ofsf (SC-55) to see if
-     * AWE sounds correct on a smaller proven bank. */
-    smp_voice_enable_awe_backend(1);
-    printf("MIDI: opl_Init AWE=on hw_env=on full\n");
+
+    /* SW voice engine — envelope/LFO/filter advance in C at 1 kHz,
+     * mixer writes from CPU only.  Disables the AWE coprocessor path
+     * that had the shared voice_state_ram, the multi-writer voice_tbl
+     * mux, and the PITCH_COMPOSE stage.  Simpler, all debuggable in C. */
+    smp_voice_enable_awe_backend(0);
+
+    /* Reverb/chorus left at FPGA reset default (0 = bypass).  Duke3D's
+     * midi_of.c warns explicitly that mididemo's (80,140) reverb +
+     * (48,60,12) chorus settings sum past the mixer accumulator
+     * headroom and clip — Duke3D and mididemo MODE_PLAY survive only
+     * because their patch sets don't drive the dry mix to int16 max
+     * for long.  Doom's id soundtrack is dense and sustained, so the
+     * dry mix sits near saturation; adding ~30 % wet reverb +
+     * ~18 % wet chorus on top pushed every loud passage into hard
+     * clipping = "distorted mess".  Keeping wet at 0 leaves clean
+     * dry mix; we can re-introduce a small wet send later once the
+     * mixer adds compression instead of hard clamp. */
+
     return rc == OF_MIDI_OK;
 }
 

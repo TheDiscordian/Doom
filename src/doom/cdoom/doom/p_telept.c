@@ -123,6 +123,15 @@ EV_Teleport
 
 		thing->angle = m->angle;
 		thing->momx = thing->momy = thing->momz = 0;
+
+		// Interpolation: P_TeleportMove already snapped oldx/oldy/oldz
+		// to the destination; also snap oldangle / oldz (the Final Doom
+		// z-fix above may have changed z after P_TeleportMove) so the
+		// next interpolated frame starts cleanly at the destination.
+		thing->oldx     = thing->x;
+		thing->oldy     = thing->y;
+		thing->oldz     = thing->z;
+		thing->oldangle = thing->angle;
 		return 1;
 	    }	
 	}

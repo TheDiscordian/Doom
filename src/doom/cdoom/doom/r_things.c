@@ -445,35 +445,69 @@ void R_ProjectSprite (mobj_t* thing)
 {
     fixed_t		tr_x;
     fixed_t		tr_y;
-    
+
     fixed_t		gxt;
     fixed_t		gyt;
-    
+
     fixed_t		tx;
     fixed_t		tz;
 
     fixed_t		xscale;
-    
+
     int			x1;
     int			x2;
 
     spritedef_t*	sprdef;
     spriteframe_t*	sprframe;
     int			lump;
-    
+
     unsigned		rot;
     boolean		flip;
-    
+
     int			index;
 
     vissprite_t*	vis;
-    
+
     angle_t		ang;
     fixed_t		iscale;
-    
+
+    // Interpolated thing position/angle. When fractionaltic is 0 (capped
+    // mode or exactly on a tic boundary) these equal thing->x/y/z/angle
+    // and the code below is a no-op. Lerping here is what makes 60 Hz
+    // rendering of a 35 Hz simulation look smooth.
+    fixed_t		interp_x;
+    fixed_t		interp_y;
+    fixed_t		interp_z;
+    angle_t		interp_angle;
+
+    if (fractionaltic)
+    {
+        int32_t adiff;
+
+        interp_x = thing->oldx + FixedMul(thing->x - thing->oldx, fractionaltic);
+        interp_y = thing->oldy + FixedMul(thing->y - thing->oldy, fractionaltic);
+        interp_z = thing->oldz + FixedMul(thing->z - thing->oldz, fractionaltic);
+
+        // angle_t is a 32-bit fixed-point fraction of a circle. The
+        // unsigned-subtraction + signed-cast trick gives the short-arc
+        // delta (e.g. 359°→1° is +2°, not -358°). FixedMul can't be used
+        // on a full-range angle delta (180° << fractionaltic overflows
+        // 32-bit intermediate), so do the multiply in 64 bits.
+        adiff = (int32_t)(thing->angle - thing->oldangle);
+        interp_angle = thing->oldangle +
+                       (angle_t)(((int64_t)adiff * fractionaltic) >> FRACBITS);
+    }
+    else
+    {
+        interp_x     = thing->x;
+        interp_y     = thing->y;
+        interp_z     = thing->z;
+        interp_angle = thing->angle;
+    }
+
     // transform the origin point
-    tr_x = thing->x - viewx;
-    tr_y = thing->y - viewy;
+    tr_x = interp_x - viewx;
+    tr_y = interp_y - viewy;
 	
     gxt = FixedMul(tr_x,viewcos); 
     gyt = -FixedMul(tr_y,viewsin);
@@ -511,8 +545,8 @@ void R_ProjectSprite (mobj_t* thing)
     if (sprframe->rotate)
     {
 	// choose a different rotation based on player view
-	ang = R_PointToAngle (thing->x, thing->y);
-	rot = (ang-thing->angle+(unsigned)(ANG45/2)*9)>>29;
+	ang = R_PointToAngle (interp_x, interp_y);
+	rot = (ang-interp_angle+(unsigned)(ANG45/2)*9)>>29;
 	lump = sprframe->lump[rot];
 	flip = (boolean)sprframe->flip[rot];
     }
@@ -542,10 +576,10 @@ void R_ProjectSprite (mobj_t* thing)
     vis = R_NewVisSprite ();
     vis->mobjflags = thing->flags;
     vis->scale = xscale<<detailshift;
-    vis->gx = thing->x;
-    vis->gy = thing->y;
-    vis->gz = thing->z;
-    vis->gzt = thing->z + spritetopoffset[lump];
+    vis->gx = interp_x;
+    vis->gy = interp_y;
+    vis->gz = interp_z;
+    vis->gzt = interp_z + spritetopoffset[lump];
     vis->texturemid = vis->gzt - viewz;
     vis->x1 = x1 < 0 ? 0 : x1;
     vis->x2 = x2 >= viewwidth ? viewwidth-1 : x2;	

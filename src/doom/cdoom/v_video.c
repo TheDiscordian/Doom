@@ -164,6 +164,10 @@ void V_DrawPatch(int x, int y, patch_t *patch)
      || y < 0
      || y + SHORT(patch->height) > SCREENHEIGHT)
     {
+        printf("Bad V_DrawPatch: patch=%p x=%d y=%d w=%d h=%d (screen %dx%d)\n",
+               (void*)patch, x, y,
+               (int)SHORT(patch->width), (int)SHORT(patch->height),
+               SCREENWIDTH, SCREENHEIGHT);
         I_Error("Bad V_DrawPatch");
     }
 #endif

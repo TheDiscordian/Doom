@@ -67,6 +67,7 @@ release: $(OBJ_DIR)/app.elf
 	@mkdir -p $$(ls -d $(OUT)/Assets/*/)/common
 	@cp $(RUNTIME)/os.bin $$(ls -d $(OUT)/Assets/*/)/common/
 	@cp $(RUNTIME)/bank.ofsf $$(ls -d $(OUT)/Assets/*/)/common/ 2>/dev/null || true
+	@cp $(RUNTIME)/8mbgmsfx.ofsf $$(ls -d $(OUT)/Assets/*/)/common/ 2>/dev/null || true
 	@cp $< $$(ls -d $(OUT)/Assets/*/)/common/$(APP).elf
 	@for f in *.wad *.dat; do [ -f "$$f" ] && cp "$$f" $$(ls -d $(OUT)/Assets/*/)/common/; done 2>/dev/null; true
 	@echo "Ready: build/$(APP)/"

@@ -78,7 +78,12 @@ fixed_t			viewsin;
 player_t*		viewplayer;
 
 // 0 = high, 1 = low
-int			detailshift;	
+int			detailshift;
+
+// Uncapped framerate: render at display rate with interpolation between 35 Hz tics.
+// See r_main.h for description. Default on; disabled in d_loop when inappropriate.
+boolean		crispy_uncapped = true;
+fixed_t		fractionaltic = 0;
 
 //
 // precalculated math tables
@@ -820,17 +825,40 @@ R_PointInSubsector
 // R_SetupFrame
 //
 void R_SetupFrame (player_t* player)
-{		
+{
     int		i;
-    
+
     viewplayer = player;
-    viewx = player->mo->x;
-    viewy = player->mo->y;
-    viewangle = player->mo->angle + viewangleoffset;
+
+    // Interpolate the camera between tics so the view moves smoothly at
+    // display rate (60 Hz) instead of snapping to 35 Hz tic boundaries.
+    // All mobjs in R_ProjectSprite use the same fractionaltic, so the
+    // view and the world stay in sync at every sub-tic frame.
+    if (fractionaltic)
+    {
+        mobj_t *mo = player->mo;
+        int32_t adiff;
+
+        viewx = mo->oldx + FixedMul(mo->x - mo->oldx, fractionaltic);
+        viewy = mo->oldy + FixedMul(mo->y - mo->oldy, fractionaltic);
+        viewz = player->oldviewz
+              + FixedMul(player->viewz - player->oldviewz, fractionaltic);
+
+        adiff = (int32_t)(mo->angle - mo->oldangle);
+        viewangle = mo->oldangle
+                  + (angle_t)(((int64_t)adiff * fractionaltic) >> FRACBITS)
+                  + viewangleoffset;
+    }
+    else
+    {
+        viewx     = player->mo->x;
+        viewy     = player->mo->y;
+        viewangle = player->mo->angle + viewangleoffset;
+        viewz     = player->viewz;
+    }
+
     extralight = player->extralight;
 
-    viewz = player->viewz;
-    
     viewsin = finesine[viewangle>>ANGLETOFINESHIFT];
     viewcos = finecosine[viewangle>>ANGLETOFINESHIFT];
 	

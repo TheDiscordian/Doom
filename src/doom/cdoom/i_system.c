@@ -19,6 +19,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 
 #include <stdarg.h>
@@ -52,6 +53,57 @@
 
 #define DEFAULT_RAM 16 /* MiB */
 #define MIN_RAM     4  /* MiB */
+
+/* openfpgaOS port: the zone allocator uses a static pool in SDRAM .bss
+ * rather than libc malloc. A dedicated pool sidesteps the musl-heap
+ * fragmentation that caused Z_Malloc to fail on the second demo loop:
+ * with native malloc each Z_Free returned memory to libc, and after
+ * level/demo churn the heap had no contiguous 40 KB slot left.
+ *
+ * 8 MiB is plenty for Doom 1 (the original ran on 4 MiB) and fits
+ * comfortably inside the 48 MiB app SDRAM window (see src/sdk/app.ld).
+ * Alignment to 8 bytes matches z_zone.c's header layout. */
+#define OF_ZONE_BYTES (8 * 1024 * 1024)
+/* Canary words immediately before/after the usable zone pool. If a
+ * stray DMA, ISR stack overrun, or off-by-one scribbles over the zone
+ * boundary, the canary flips and I_CheckZoneCanaries() will catch it
+ * before the corrupted memblock_t header produces a misaligned pointer
+ * (see the NET_WriteInt8 mcause=4 crash — the packet pointer was
+ * misaligned, which can only happen if zone headers were scribbled). */
+#define OF_ZONE_CANARY_BYTES 64
+#define OF_ZONE_CANARY_MAGIC 0xDEADC0DEu
+static byte of_zone_pool[OF_ZONE_CANARY_BYTES + OF_ZONE_BYTES + OF_ZONE_CANARY_BYTES]
+    __attribute__((aligned(8)));
+
+static uint32_t *of_zone_canary_pre(void)
+{
+    return (uint32_t *)of_zone_pool;
+}
+
+static uint32_t *of_zone_canary_post(void)
+{
+    return (uint32_t *)(of_zone_pool + OF_ZONE_CANARY_BYTES + OF_ZONE_BYTES);
+}
+
+int I_CheckZoneCanaries(void)
+{
+    uint32_t *pre  = of_zone_canary_pre();
+    uint32_t *post = of_zone_canary_post();
+    int words = OF_ZONE_CANARY_BYTES / 4;
+    for (int i = 0; i < words; i++) {
+        if (pre[i] != OF_ZONE_CANARY_MAGIC) {
+            printf("ZONE CANARY: pre[%d]@%p = %08x (expected %08x)\n",
+                   i, &pre[i], pre[i], OF_ZONE_CANARY_MAGIC);
+            return 0;
+        }
+        if (post[i] != OF_ZONE_CANARY_MAGIC) {
+            printf("ZONE CANARY: post[%d]@%p = %08x (expected %08x)\n",
+                   i, &post[i], post[i], OF_ZONE_CANARY_MAGIC);
+            return 0;
+        }
+    }
+    return 1;
+}
 
 
 typedef struct atexit_listentry_s atexit_listentry_t;
@@ -127,50 +179,26 @@ static byte *AutoAllocMemory(int *size, int default_ram, int min_ram)
 
 byte *I_ZoneBase (int *size)
 {
-    byte *zonemem;
-    int min_ram, default_ram;
-    int p;
+    /* Return the static .bss-resident pool. The -mb command-line
+     * override is intentionally ignored on this port — the pool is
+     * sized at compile time so the linker/loader picks it up along
+     * with the rest of BSS. AutoAllocMemory is kept for the PC build
+     * path reference but no longer called. */
+    (void)AutoAllocMemory;
+    *size = OF_ZONE_BYTES;
 
-    //!
-    // @category obscure
-    // @arg <mb>
-    //
-    // Specify the heap size, in MiB.
-    //
-
-    p = M_CheckParmWithArgs("-mb", 1);
-
-    if (p > 0)
-    {
-        default_ram = atoi(myargv[p+1]);
-        min_ram = default_ram;
+    /* Seed the canaries. */
+    uint32_t *pre  = of_zone_canary_pre();
+    uint32_t *post = of_zone_canary_post();
+    int words = OF_ZONE_CANARY_BYTES / 4;
+    for (int i = 0; i < words; i++) {
+        pre[i]  = OF_ZONE_CANARY_MAGIC;
+        post[i] = OF_ZONE_CANARY_MAGIC;
     }
-    else
-    {
-        // Because of the 8-byte pointer size in a 64-bit build, the default
-        // heap size (16 MiB) is insufficient compared to a 32-bit build. For
-        // example, the Alien Vendetta avm62402.lmp demo completes successfully
-        // on a 32-bit build, but terminates with an out of memory error on a
-        // 64-bit build. Therefore, to maintain consistency with a 32-bit
-        // build, the heap size should be increased.
-
-        if (sizeof(void *) == 8)
-        {
-            default_ram = DEFAULT_RAM * 2;
-        }
-        else
-        {
-            default_ram = DEFAULT_RAM;
-        }
-        min_ram = MIN_RAM;
-    }
-
-    zonemem = AutoAllocMemory(size, default_ram, min_ram);
-
-    printf("zone memory: %p, %x allocated for zone\n", 
-           zonemem, *size);
-
-    return zonemem;
+    byte *inner = of_zone_pool + OF_ZONE_CANARY_BYTES;
+    printf("zone memory: %p, %x allocated for zone (canaries %p / %p)\n",
+           inner, *size, pre, post);
+    return inner;
 }
 
 void I_PrintBanner(const char *msg)

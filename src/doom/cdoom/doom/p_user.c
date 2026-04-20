@@ -230,7 +230,12 @@ void P_PlayerThink (player_t* player)
 {
     ticcmd_t*		cmd;
     weapontype_t	newweapon;
-	
+
+    // Interpolation: snapshot viewz before P_CalcHeight moves it. Combined
+    // with player->mo->old* (snapshot in P_MobjThinker) this lets the
+    // renderer lerp the camera smoothly between 35 Hz tics.
+    player->oldviewz = player->viewz;
+
     // fixme: do this in the cheat code
     if (player->cheats & CF_NOCLIP)
 	player->mo->flags |= MF_NOCLIP;

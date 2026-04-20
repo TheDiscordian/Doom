@@ -16,7 +16,9 @@
 //
 
 #include <ctype.h>
+#include <stdint.h>
 #include <string.h>
+#include "i_system.h"
 #include "m_misc.h"
 #include "net_packet.h"
 #include "z_zone.h"
@@ -28,7 +30,17 @@ net_packet_t *NET_NewPacket(int initial_size)
     net_packet_t *packet;
 
     packet = (net_packet_t *) Z_Malloc(sizeof(net_packet_t), PU_STATIC, 0);
-    
+
+    /* Misaligned packet pointer here == zone allocator handed back a bad
+     * pointer, which in turn means the zone's internal memblock_t chain
+     * was scribbled. Trip early with useful context instead of later at
+     * NET_WriteInt8's `lw a3, 4(a0)` with mcause=4. */
+    if (((uintptr_t)packet & 0x3) != 0) {
+        printf("NET_NewPacket: Z_Malloc returned misaligned packet %p\n", packet);
+        Z_CheckHeap();
+        I_Error("NET_NewPacket: misaligned allocation");
+    }
+
     if (initial_size == 0)
         initial_size = 256;
 

@@ -627,3 +627,47 @@ boolean W_IsIWADLump(const lumpinfo_t *lump)
 {
 	return lump->wad_file == lumpinfo[0]->wad_file;
 }
+
+boolean W_PointerInWadMapped(const void *ptr, char out_name[8],
+                             unsigned int *out_offset)
+{
+    const byte *p = (const byte *)ptr;
+    unsigned int i;
+
+    if (lumpinfo == NULL) return false;
+
+    for (i = 0; i < numlumps; ++i)
+    {
+        const wad_file_t *wad = lumpinfo[i]->wad_file;
+        const byte *base;
+
+        if (wad == NULL || wad->mapped == NULL) continue;
+        base = wad->mapped;
+        if (p < base || p >= base + wad->length) continue;
+
+        // Find the lump whose byte range contains p, if any, so the
+        // caller can tell *which* lump was freed.
+        {
+            unsigned int j;
+            unsigned int off = (unsigned int)(p - base);
+            for (j = 0; j < numlumps; ++j)
+            {
+                lumpinfo_t *lj = lumpinfo[j];
+                if (lj->wad_file != wad) continue;
+                if (off >= (unsigned int)lj->position &&
+                    off <  (unsigned int)lj->position + (unsigned int)lj->size)
+                {
+                    if (out_name)   memcpy(out_name, lj->name, 8);
+                    if (out_offset) *out_offset = off - (unsigned int)lj->position;
+                    return true;
+                }
+            }
+            // Inside the mapped region but not inside a known lump
+            // (e.g. header/directory area). Still worth reporting.
+            if (out_name)   memset(out_name, '?', 8);
+            if (out_offset) *out_offset = off;
+            return true;
+        }
+    }
+    return false;
+}

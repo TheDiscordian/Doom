@@ -75,4 +75,12 @@ void W_ReleaseLumpName(const char *name);
 const char *W_WadNameForLump(const lumpinfo_t *lump);
 boolean W_IsIWADLump(const lumpinfo_t *lump);
 
+// Diagnostic: if ptr lies inside any wad_file->mapped slurp buffer,
+// fill *out_name (8 chars, not NUL-terminated) and *out_offset with
+// the matching lump info and return true. Returns false if ptr is
+// not inside any mapped region. Used by Z_Free to distinguish "freed
+// a raw WAD pointer" from header corruption / double-free.
+boolean W_PointerInWadMapped(const void *ptr, char out_name[8],
+                             unsigned int *out_offset);
+
 #endif

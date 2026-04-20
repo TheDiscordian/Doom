@@ -452,6 +452,14 @@ P_NightmareRespawn (mobj_t* mobj)
 //
 void P_MobjThinker (mobj_t* mobj)
 {
+    // Interpolation: snapshot the pre-tic state so the renderer can lerp
+    // from (old*, now) during sub-tic frames. Do this before any movement
+    // so oldx/oldy/oldz reflect the position at the end of the previous tic.
+    mobj->oldx     = mobj->x;
+    mobj->oldy     = mobj->y;
+    mobj->oldz     = mobj->z;
+    mobj->oldangle = mobj->angle;
+
     // momentum movement
     if (mobj->momx
 	|| mobj->momy
@@ -565,7 +573,15 @@ P_SpawnMobj
 	mobj->z = z;
 
     mobj->thinker.function.acp1 = (actionf_p1)P_MobjThinker;
-	
+
+    // Interpolation: initialize old* to the spawn position so the first
+    // render after spawn doesn't lerp from a stale (0,0,0). Subsequent
+    // tics update old* inside P_MobjThinker.
+    mobj->oldx     = mobj->x;
+    mobj->oldy     = mobj->y;
+    mobj->oldz     = mobj->z;
+    mobj->oldangle = mobj->angle;
+
     P_AddThinker (&mobj->thinker);
 
     return mobj;

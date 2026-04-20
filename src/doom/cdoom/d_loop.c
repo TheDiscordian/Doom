@@ -80,6 +80,9 @@ int gametic;
 
 boolean singletics = false;
 
+// See d_loop.h — caller sets this each frame to opt into non-blocking behavior.
+boolean tryruntics_nonblocking = false;
+
 // Index of the local player.
 
 static int localplayer;
@@ -703,6 +706,15 @@ void TryRunTics (void)
     lowtic = GetLowTic();
 
     availabletics = lowtic - gametic/ticdup;
+
+    // Uncapped/interpolated render: if no new tic is ready yet, return
+    // without running or waiting so the caller can draw an interpolated
+    // frame. The tic boundary has not moved, so subsequent calls will
+    // eventually see a new tic and resume normal operation.
+    if (tryruntics_nonblocking && availabletics < 1)
+    {
+        return;
+    }
 
     // decide how many tics to run
 

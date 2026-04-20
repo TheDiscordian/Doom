@@ -707,10 +707,24 @@ void G_DoLoadLevel (void)
 	memset (players[i].frags,0,sizeof(players[i].frags)); 
     } 
 		 
-    P_SetupLevel (gameepisode, gamemap, 0, gameskill);    
-    displayplayer = consoleplayer;		// view the guy you are playing    
-    gameaction = ga_nothing; 
+    P_SetupLevel (gameepisode, gamemap, 0, gameskill);
+    displayplayer = consoleplayer;		// view the guy you are playing
+    gameaction = ga_nothing;
     Z_CheckHeap ();
+
+    // Interpolation: seed each player's viewz / oldviewz to the resting
+    // head-height at spawn. P_CalcHeight normally sets viewz during
+    // P_PlayerThink, but that hasn't run yet; without this, the first
+    // rendered frame of a new level would lerp the camera from the floor
+    // up to head-height. Per-mobj oldx/y/z/angle are seeded by P_SpawnMobj.
+    for (i = 0; i < MAXPLAYERS; i++)
+    {
+        if (playeringame[i] && players[i].mo)
+        {
+            players[i].viewz    = players[i].mo->z + players[i].viewheight;
+            players[i].oldviewz = players[i].viewz;
+        }
+    }
     
     // clear cmd building stuff
 

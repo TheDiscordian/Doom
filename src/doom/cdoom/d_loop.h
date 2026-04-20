@@ -63,6 +63,12 @@ void D_QuitNetGame (void);
 //? how many ticks to run?
 void TryRunTics (void);
 
+// When true, TryRunTics returns immediately if no new tic is available
+// instead of blocking. The caller is expected to render an interpolated
+// frame in the gap. Set by the game module based on its own uncapped /
+// demo / netgame / singletics state.
+extern boolean tryruntics_nonblocking;
+
 // Called at start of game loop to initialize timers
 void D_StartGameLoop(void);
 

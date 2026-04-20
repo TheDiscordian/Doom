@@ -43,7 +43,9 @@ static void free_sfx_slot(sfxinfo_t *sfx)
 {
     sfx_slot_t *s = sfx->driver_data;
     if (!s) return;
-    free(s->pcm);
+    /* s->pcm was allocated from CRAM1 via of_mixer_alloc_samples, which
+     * is a bump allocator with no per-slot free.  Leave it; the whole
+     * pool is reclaimed by of_mixer_free_samples() at shutdown. */
     free(s);
     sfx->driver_data = NULL;
 }
@@ -71,7 +73,10 @@ static boolean load_sfx(sfxinfo_t *sfx)
     byte *pcm8 = data + 8;
     if (samples > 32) { pcm8 += 16; samples -= 32; }
 
-    int16_t *pcm16 = malloc(samples * sizeof(int16_t));
+    /* The hardware mixer reads samples from CRAM1 — ordinary malloc'd
+     * heap memory is not accessible to it, so we MUST allocate via
+     * of_mixer_alloc_samples and expand 8→16-bit into that buffer. */
+    int16_t *pcm16 = of_mixer_alloc_samples(samples * sizeof(int16_t));
     if (!pcm16) { W_ReleaseLumpNum(sfx->lumpnum); return false; }
     for (uint32_t i = 0; i < samples; i++)
         pcm16[i] = (int16_t)((pcm8[i] - 128) << 8);
@@ -91,9 +96,11 @@ static boolean load_sfx(sfxinfo_t *sfx)
 static boolean I_SDL_InitSound(GameMission_t mission)
 {
     (void)mission;
-    of_audio_init();
-    of_mixer_init(NUM_CHANNELS, OF_MIXER_OUTPUT_RATE);
+    /* Audio + mixer are initialised by music_opl_module's Init.  Two inits
+     * race over master/group volumes and were the only divergence from
+     * mididemo's clean path. */
     for (int i = 0; i < NUM_CHANNELS; i++) channel_voice[i] = -1;
+    printf("SFX: init ok (stub — music_opl_module owns mixer)\n");
     return true;
 }
 
@@ -129,50 +136,30 @@ static void set_params(int voice, int vol, int sep)
 
 static void I_SDL_UpdateSoundParams(int channel, int vol, int sep)
 {
-    if ((unsigned)channel >= NUM_CHANNELS) return;
-    set_params(channel_voice[channel], vol, sep);
+    (void)channel; (void)vol; (void)sep;
 }
 
+/* SFX temporarily stubbed so we can validate music in isolation.  With
+ * of_midi_pump no longer called from the main thread, music should be
+ * clean on its own before we re-introduce the mixer voice competition
+ * SFX adds. */
 static int I_SDL_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep, int pitch)
 {
-    (void)pitch;
+    (void)sfx; (void)vol; (void)sep; (void)pitch;
     if ((unsigned)channel >= NUM_CHANNELS) return -1;
-    if (!load_sfx(sfx)) return -1;
-    sfx_slot_t *s = sfx->driver_data;
-
-    /* Kill any existing voice on this channel. */
-    if (channel_voice[channel] >= 0)
-        of_mixer_stop(channel_voice[channel]);
-
-    int voice = of_mixer_play((const uint8_t *)s->pcm, s->sample_count,
-                              s->sample_rate, sfx->priority, 255);
-    channel_voice[channel] = voice;
-    set_params(voice, vol, sep);
     return channel;
 }
 
-static void I_SDL_StopSound(int channel)
-{
-    if ((unsigned)channel >= NUM_CHANNELS) return;
-    if (channel_voice[channel] >= 0) {
-        of_mixer_stop(channel_voice[channel]);
-        channel_voice[channel] = -1;
-    }
-}
-
-static boolean I_SDL_SoundIsPlaying(int channel)
-{
-    if ((unsigned)channel >= NUM_CHANNELS) return false;
-    int v = channel_voice[channel];
-    return v >= 0 ? (boolean)of_mixer_voice_active(v) : false;
-}
+static void I_SDL_StopSound(int channel)    { (void)channel; }
+static boolean I_SDL_SoundIsPlaying(int channel) { (void)channel; return false; }
 
 static void I_SDL_PrecacheSounds(sfxinfo_t *sounds, int num_sounds)
 {
-    for (int i = 0; i < num_sounds; i++) load_sfx(&sounds[i]);
-    /* free_sfx_slot is called on shutdown implicitly via Z_Free if used;
-     * we just hang onto allocations. (PC has plenty of memory.) */
-    (void)free_sfx_slot;
+    /* SFX path is stubbed (StartSound returns the channel without playing),
+     * so loading them just consumes CRAM1 sample-pool space adjacent to
+     * the SF2 bank for no audible effect.  Skip until SFX is wired up. */
+    (void)sounds; (void)num_sounds;
+    (void)load_sfx; (void)free_sfx_slot;
 }
 
 const sound_module_t sound_sdl_module = {

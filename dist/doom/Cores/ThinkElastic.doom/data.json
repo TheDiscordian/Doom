@@ -38,7 +38,7 @@
                 "name": "Data 2",
                 "required": false,
                 "parameters": 0,
-                "extensions": ["mid", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
+                "extensions": ["mid", "mod", "ofsf", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
                 "deferload": true
             },
             {
@@ -55,14 +55,6 @@
                 "required": false,
                 "parameters": 0,
                 "extensions": ["mid", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
-                "deferload": true
-            },
-            {
-                "id": 7,
-                "name": "Sound Bank",
-                "required": false,
-                "parameters": 0,
-                "extensions": ["ofsf"],
                 "deferload": true
             },
             { "id": 10, "name": "Save 0", "required": false, "parameters": "0x84", "nonvolatile": true, "address": "0x30000000", "size_maximum": "0x40000", "extensions": ["sav"] },

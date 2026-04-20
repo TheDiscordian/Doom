@@ -85,9 +85,10 @@ static int snd_mport = 0;
 
 static const sound_module_t *sound_modules[] =
 {
-#ifndef DISABLE_SDL2MIXER
+    /* openfpgaOS: sound_sdl_module is provided by shim/i_sdlsound.c
+     * and drives the hardware mixer directly -- it has no SDL_mixer
+     * dependency, so keep it registered even under DISABLE_SDL2MIXER. */
     &sound_sdl_module,
-#endif // DISABLE_SDL2MIXER
     &sound_pcsound_module,
     NULL,
 };
@@ -164,14 +165,20 @@ static void InitMusicModule(void)
 
     music_module = NULL;
 
+    printf("MUSIC: InitMusicModule snd_musicdevice=%d\n", snd_musicdevice);
+
     for (i=0; music_modules[i] != NULL; ++i)
     {
+        int match = SndDeviceInList(snd_musicdevice,
+                                    music_modules[i]->sound_devices,
+                                    music_modules[i]->num_sound_devices);
+        printf("MUSIC: module[%d]=%p devs=%d match=%d\n",
+               i, (void*)music_modules[i],
+               music_modules[i]->num_sound_devices, match);
         // Is the music device in the list of devices supported
         // by this module?
 
-        if (SndDeviceInList(snd_musicdevice, 
-                            music_modules[i]->sound_devices,
-                            music_modules[i]->num_sound_devices))
+        if (match)
         {
         #ifdef _WIN32
             // Skip the native Windows MIDI module if using Timidity.
@@ -185,13 +192,16 @@ static void InitMusicModule(void)
 
             // Initialize the module
 
-            if (music_modules[i]->Init())
+            int ok = music_modules[i]->Init();
+            printf("MUSIC: module[%d] Init returned %d\n", i, ok);
+            if (ok)
             {
                 music_module = music_modules[i];
                 return;
             }
         }
     }
+    printf("MUSIC: no module selected (silent)\n");
 }
 
 //
@@ -234,6 +244,9 @@ void I_InitSound(GameMission_t mission)
     //
 
     nomusicpacks = M_ParmExists("-nomusicpacks");
+
+    printf("AUDIO: I_InitSound nosound=%d nosfx=%d nomusic=%d ss=%d\n",
+           nosound, nosfx, nomusic, screensaver_mode);
 
     // Auto configure the music pack directory.
     M_SetMusicPackDir();

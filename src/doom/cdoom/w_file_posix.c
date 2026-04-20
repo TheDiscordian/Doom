@@ -96,9 +96,36 @@ static wad_file_t *W_POSIX_OpenFile(const char *path)
     result->wad.mapped = NULL;
     result->handle = handle;
 
-    // Try to map the file into memory with mmap:
-
-    MapFile(result, path);
+    /* openfpgaOS: slurp the whole WAD into SDRAM at open time.  This
+     * runs during W_Init, BEFORE I_InitSound / of_midi_play, so the HW
+     * mixer is not yet DMA-reading CRAM1 sample memory.  Every
+     * subsequent lump fetch (W_CacheLumpNum) then just returns a
+     * pointer into this SDRAM buffer via the "mapped" path — no more
+     * read() syscalls while music is playing, and no CRAM1 I/O cache
+     * contention with the mixer DMA arbiter.
+     *
+     * mmap is unusable on this platform for the same reason: file-
+     * backed pages transit CRAM1 and corrupt under mixer load.  See
+     * of_smp_bank.c for the identical contention model. */
+    (void)MapFile;
+    {
+        size_t len = result->wad.length;
+        void  *slurp = malloc(len);
+        if (slurp) {
+            lseek(handle, 0, SEEK_SET);
+            size_t done = 0;
+            while (done < len) {
+                ssize_t n = read(handle, (char *)slurp + done, len - done);
+                if (n <= 0) break;
+                done += (size_t)n;
+            }
+            if (done == len) {
+                result->wad.mapped = slurp;
+            } else {
+                free(slurp);
+            }
+        }
+    }
 
     return &result->wad;
 }
@@ -109,13 +136,11 @@ static void W_POSIX_CloseFile(wad_file_t *wad)
 
     posix_wad = (posix_wad_file_t *) wad;
 
-    // If mapped, unmap it.
-
-    // Close the file
-
+    /* "mapped" is a malloc'd slurp buffer on openfpgaOS, not an mmap
+     * region — release with free() (munmap would be wrong). */
     if (posix_wad->wad.mapped)
     {
-        munmap(posix_wad->wad.mapped, posix_wad->wad.length);
+        free((void *)posix_wad->wad.mapped);
     }
     close(posix_wad->handle);
     Z_Free(posix_wad);

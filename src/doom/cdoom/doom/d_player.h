@@ -156,7 +156,13 @@ typedef struct player_s
     pspdef_t		psprites[NUMPSPRITES];
 
     // True if secret level has been done.
-    boolean		didsecret;	
+    boolean		didsecret;
+
+    // --- Interpolation support (uncapped framerate) ---
+    // Snapshot of player->viewz at the start of the most recent tic.
+    // x/y/angle are interpolated via player->mo->old* directly; only
+    // viewz has no mobj analogue (it combines mo->z + viewheight + bob).
+    fixed_t		oldviewz;
 
 } player_t;
 

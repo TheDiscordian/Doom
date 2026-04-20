@@ -170,9 +170,9 @@ boolean D_Display (void)
     int				y;
     boolean			wipe;
     boolean			redrawsbar;
-		
+
     redrawsbar = false;
-    
+
     // change the view size if needed
     if (setsizeneeded)
     {
@@ -221,7 +221,7 @@ boolean D_Display (void)
 	D_PageDrawer ();
 	break;
     }
-    
+
     // draw buffered stuff to screen
     I_UpdateNoBlit ();
     
@@ -430,7 +430,45 @@ void D_RunFrame()
     // frame syncronous IO operations
     I_StartFrame ();
 
-    TryRunTics (); // will run at least one tic
+    {
+        static int last_gametic = -1;
+        static int last_tic_ms  = 0;
+        boolean    uncapped_ok;
+
+        uncapped_ok = crispy_uncapped
+                      && !demoplayback
+                      && !demorecording
+                      && !netgame
+                      && !singletics;
+
+        tryruntics_nonblocking = uncapped_ok;
+
+        TryRunTics ();
+
+        // If a new tic (or tics) just ran, anchor our wall-clock to "now" so
+        // subsequent sub-tic frames measure elapsed time from the most recent
+        // tic boundary. If multiple tics ran in one call (catch-up), they all
+        // effectively happened "now" — the small timing error is invisible.
+        if (gametic != last_gametic)
+        {
+            last_gametic = gametic;
+            last_tic_ms  = I_GetTimeMS();
+        }
+
+        if (uncapped_ok)
+        {
+            int dt = I_GetTimeMS() - last_tic_ms;
+            if (dt < 0) dt = 0;
+            // fractionaltic = dt * TICRATE * FRACUNIT / 1000, clamped to [0,FRACUNIT]
+            fractionaltic = (fixed_t)(((int64_t)dt * TICRATE * FRACUNIT) / 1000);
+            if (fractionaltic < 0)         fractionaltic = 0;
+            if (fractionaltic > FRACUNIT)  fractionaltic = FRACUNIT;
+        }
+        else
+        {
+            fractionaltic = 0;
+        }
+    }
 
     S_UpdateSounds (players[consoleplayer].mo);// move positional sounds
 

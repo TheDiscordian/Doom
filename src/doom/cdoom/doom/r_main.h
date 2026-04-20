@@ -84,7 +84,19 @@ extern lighttable_t*	fixedcolormap;
 // Blocky/low detail mode.
 //B remove this?
 //  0 = high, 1 = low
-extern	int		detailshift;	
+extern	int		detailshift;
+
+
+// Uncapped / interpolated framerate support.
+// fractionaltic is the fraction [0, FRACUNIT] of a 35 Hz tic that has elapsed
+// since the last gametic was run. The renderer uses it to lerp mobj positions,
+// sector heights, player view, etc. so rendering can happen at display rate
+// (e.g. 60 Hz) while the simulation stays locked at 35 Hz.
+//
+// Forced to 0 and crispy_uncapped to false for demo playback/recording,
+// netgames, and -singletics to keep those bit-exact.
+extern boolean crispy_uncapped;
+extern fixed_t fractionaltic;
 
 
 //
