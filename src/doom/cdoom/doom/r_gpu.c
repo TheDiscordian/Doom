@@ -93,18 +93,19 @@ static void gpu_release_deferred_lumps(void)
     gpu_deferred_lump_count = 0;
 }
 
-static void gpu_emit_single_batched_column(void)
+static void gpu_emit_batched_column_lane(int lane)
 {
     of_gpu_span_t span;
 
-    span.fb_addr = gpu_column_batch.fb_addr;
-    span.tex_addr = gpu_column_batch.tex_addr[0];
+    span.fb_addr = gpu_column_batch.fb_addr
+                 + (uint32_t)((int32_t)gpu_column_batch.lane_delta * lane);
+    span.tex_addr = gpu_column_batch.tex_addr[lane];
     span.s = 0;
-    span.t = gpu_column_batch.t[0];
+    span.t = gpu_column_batch.t[lane];
     span.sstep = 0;
-    span.tstep = gpu_column_batch.tstep[0];
+    span.tstep = gpu_column_batch.tstep[lane];
     span.count = gpu_column_batch.count;
-    span.light = gpu_column_batch.light[0];
+    span.light = gpu_column_batch.light[lane];
     span.flags = gpu_column_batch.flags;
     span.colormap_id = gpu_column_batch.colormap_id;
     span.fb_stride = gpu_column_batch.fb_stride;
@@ -117,19 +118,50 @@ static void gpu_emit_single_batched_column(void)
     of_gpu_draw_span(&span);
 }
 
+static void gpu_emit_column_group_chunk(int first_lane, int lanes)
+{
+    uint32_t words[OF_GPU_SPAN_GROUP_WORDS];
+
+    _gpu_encode_span_group_chunk(words, &gpu_column_batch,
+                                 (uint32_t)first_lane,
+                                 (uint32_t)lanes);
+    _gpu_cmd_header(GPU_CMD_DRAW_SPAN_GROUP, OF_GPU_SPAN_GROUP_WORDS);
+    for (uint32_t i = 0; i < OF_GPU_SPAN_GROUP_WORDS; i++)
+        _gpu_ring_write(words[i]);
+}
+
 static void gpu_flush_column_batch(void)
 {
     int lanes = gpu_column_batch_count;
+    int first = 0;
+    int left;
 
     if (lanes <= 0)
         return;
 
     gpu_column_batch.lane_count = (uint8_t)lanes;
 
-    if (lanes == 1)
-        gpu_emit_single_batched_column();
-    else
-        of_gpu_draw_span_group(&gpu_column_batch);
+    left = lanes;
+    while (left >= 4)
+    {
+        gpu_emit_column_group_chunk(first, 4);
+        first += 4;
+        left -= 4;
+    }
+
+    if (left == 3)
+    {
+        gpu_emit_column_group_chunk(first, 2);
+        gpu_emit_batched_column_lane(first + 2);
+    }
+    else if (left == 2)
+    {
+        gpu_emit_column_group_chunk(first, 2);
+    }
+    else if (left == 1)
+    {
+        gpu_emit_batched_column_lane(first);
+    }
 
     R_Perf_CountGpuColumnBatch((unsigned int)lanes);
     gpu_column_batch_count = 0;
