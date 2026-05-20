@@ -30,6 +30,7 @@ boolean R_GPU_CanDrawFuzz(void);
 boolean R_GPU_BeginFuzzSpans(void);
 void R_GPU_EndFuzzSpans(void);
 boolean R_GPU_DrawFuzzColumnDirect(int x, int yl, int yh);
+int R_GPU_ColormapRow(const byte *map);
 boolean R_GPU_DrawColumnLightDirect(int x, int yl, int yh, const byte *source,
                                     int texturemid, int iscale, int light);
 boolean R_GPU_DrawColumnLightBatchDirect(int x, int yl, int yh, int lanes,

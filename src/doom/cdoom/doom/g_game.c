@@ -55,6 +55,7 @@
 #include "hu_stuff.h"
 #include "st_stuff.h"
 #include "am_map.h"
+#include "umapinfo.h"
 #include "statdump.h"
 
 // Needs access to LFB.
@@ -71,6 +72,7 @@
 #include "sounds.h"
 
 // SKY handling - still the wrong place.
+#include "r_bsp.h"
 #include "r_data.h"
 #include "r_sky.h"
 
@@ -80,6 +82,27 @@
 
 
 #define SAVEGAMESIZE	0x2c000
+static int umapinfo_next_episode;
+static int umapinfo_next_map;
+
+static void G_SetSkyTexture(const char *skytexturename)
+{
+    int texture;
+
+    if (skytexturename == NULL)
+    {
+        return;
+    }
+
+    skytexturename = DEH_String(skytexturename);
+    texture = R_CheckTextureNumForName(skytexturename);
+
+    if (texture >= 0)
+    {
+        skytexture = texture;
+    }
+}
+
 #ifndef OF_PC
 #define OPENFPGA_SAVE_SLOT_SIZE 0x40000
 static byte openfpga_save_buffer[OPENFPGA_SAVE_SLOT_SIZE];
@@ -753,6 +776,7 @@ void G_BuildTiccmd (ticcmd_t* cmd, int maketic)
 void G_DoLoadLevel (void) 
 { 
     int             i; 
+    const char     *umap_sky;
 
     // Set the sky map.
     // First thing, we have a dummy sky texture name,
@@ -764,7 +788,13 @@ void G_DoLoadLevel (void)
 
     // The "Sky never changes in Doom II" bug was fixed in
     // the id Anthology version of doom2.exe for Final Doom.
-    if ((gamemode == commercial)
+    umap_sky = UMAPINFO_SkyTexture(gameepisode, gamemap);
+
+    if (umap_sky != NULL)
+    {
+        G_SetSkyTexture(umap_sky);
+    }
+    else if ((gamemode == commercial)
      && (gameversion == exe_final2 || gameversion == exe_chex))
     {
         const char *skytexturename;
@@ -782,9 +812,7 @@ void G_DoLoadLevel (void)
             skytexturename = "SKY3";
         }
 
-        skytexturename = DEH_String(skytexturename);
-
-        skytexture = R_TextureNumForName(skytexturename);
+        G_SetSkyTexture(skytexturename);
     }
 
     levelstarttic = gametic;        // for time calculation
@@ -1516,8 +1544,13 @@ void G_SecretExitLevel (void)
 void G_DoCompleted (void) 
 { 
     int             i; 
+    boolean         have_umap_next = false;
+    int             next_episode = 0;
+    int             next_map = 0;
 	 
     gameaction = ga_nothing; 
+    umapinfo_next_episode = 0;
+    umapinfo_next_map = 0;
  
     for (i=0 ; i<MAXPLAYERS ; i++) 
 	if (playeringame[i]) 
@@ -1525,8 +1558,22 @@ void G_DoCompleted (void)
 	 
     if (automapactive) 
 	AM_Stop (); 
+
+    if (UMAPINFO_GetMap(gameepisode, gamemap) != NULL)
+    {
+        if (UMAPINFO_GetNextMap(gameepisode, gamemap, secretexit,
+                                &next_episode, &next_map))
+        {
+            have_umap_next = true;
+        }
+        else
+        {
+            gameaction = ga_victory;
+            return;
+        }
+    }
 	
-    if (gamemode != commercial)
+    if (!have_umap_next && gamemode != commercial)
     {
         // Chex Quest ends after 5 levels, rather than 8.
 
@@ -1554,7 +1601,8 @@ void G_DoCompleted (void)
     }
 
 //#if 0  Hmmm - why?
-    if ( (gamemap == 8)
+    if (!have_umap_next
+     && (gamemap == 8)
 	 && (gamemode != commercial) ) 
     {
 	// victory 
@@ -1562,7 +1610,8 @@ void G_DoCompleted (void)
 	return; 
     } 
 	 
-    if ( (gamemap == 9)
+    if (!have_umap_next
+     && (gamemap == 9)
 	 && (gamemode != commercial) ) 
     {
 	// exit secret level 
@@ -1577,7 +1626,13 @@ void G_DoCompleted (void)
     wminfo.last = gamemap -1;
     
     // wminfo.next is 0 biased, unlike gamemap
-    if ( gamemode == commercial)
+    if (have_umap_next)
+    {
+        umapinfo_next_episode = next_episode;
+        umapinfo_next_map = next_map;
+        wminfo.next = next_map - 1;
+    }
+    else if ( gamemode == commercial)
     {
 	if (secretexit)
 	    switch(gamemap)
@@ -1627,7 +1682,11 @@ void G_DoCompleted (void)
 
     // Set par time. Exceptions are added for purposes of
     // statcheck regression testing.
-    if (gamemode == commercial)
+    if (UMAPINFO_ParTime(gameepisode, gamemap) > 0)
+    {
+        wminfo.partime = TICRATE * UMAPINFO_ParTime(gameepisode, gamemap);
+    }
+    else if (gamemode == commercial)
     {
         // map33 reads its par time from beyond the cpars[] array
         if (gamemap == 33)
@@ -1695,6 +1754,11 @@ void G_WorldDone (void)
     if (secretexit) 
 	players[consoleplayer].didsecret = true; 
 
+    if (UMAPINFO_GetMap(gameepisode, gamemap) != NULL)
+    {
+        return;
+    }
+
     if ( gamemode == commercial )
     {
 	switch (gamemap)
@@ -1716,7 +1780,17 @@ void G_WorldDone (void)
 void G_DoWorldDone (void) 
 {        
     gamestate = GS_LEVEL; 
-    gamemap = wminfo.next+1; 
+    if (umapinfo_next_map > 0)
+    {
+        gameepisode = umapinfo_next_episode;
+        gamemap = umapinfo_next_map;
+        umapinfo_next_episode = 0;
+        umapinfo_next_map = 0;
+    }
+    else
+    {
+        gamemap = wminfo.next+1;
+    }
     G_DoLoadLevel (); 
     gameaction = ga_nothing; 
     viewactive = true; 
@@ -1776,6 +1850,7 @@ void G_DoLoadGame (void)
     // dearchive all the modifications
     P_UnArchivePlayers (); 
     P_UnArchiveWorld (); 
+    R_UpdateSegRenderData();
     P_UnArchiveThinkers (); 
     P_UnArchiveSpecials (); 
  
@@ -1960,6 +2035,7 @@ G_InitNew
   int		map )
 {
     const char *skytexturename;
+    boolean     have_umap_map;
     int             i;
 
     if (paused)
@@ -2001,7 +2077,9 @@ G_InitNew
     if (skill > sk_nightmare)
 	skill = sk_nightmare;
 
-    if (gameversion >= exe_ultimate)
+    have_umap_map = UMAPINFO_GetMap(episode, map) != NULL;
+
+    if (gameversion >= exe_ultimate || have_umap_map)
     {
         if (episode == 0)
         {
@@ -2020,7 +2098,7 @@ G_InitNew
         }
     }
 
-    if (episode > 1 && gamemode == shareware)
+    if (!have_umap_map && episode > 1 && gamemode == shareware)
     {
         episode = 1;
     }
@@ -2028,7 +2106,8 @@ G_InitNew
     if (map < 1)
 	map = 1;
 
-    if ( (map > 9)
+    if (!have_umap_map
+     && (map > 9)
 	 && ( gamemode != commercial) )
       map = 9;
 
@@ -2079,14 +2158,18 @@ G_InitNew
     // restore from a saved game.  This was fixed before the Doom
     // source release, but this IS the way Vanilla DOS Doom behaves.
 
-    if (gamemode == commercial)
+    skytexturename = UMAPINFO_SkyTexture(gameepisode, gamemap);
+
+    if (skytexturename != NULL)
     {
-        skytexturename = DEH_String("SKY3");
-        skytexture = R_TextureNumForName(skytexturename);
+        G_SetSkyTexture(skytexturename);
+    }
+    else if (gamemode == commercial)
+    {
+        G_SetSkyTexture("SKY3");
         if (gamemap < 21)
         {
-            skytexturename = DEH_String(gamemap < 12 ? "SKY1" : "SKY2");
-            skytexture = R_TextureNumForName(skytexturename);
+            G_SetSkyTexture(gamemap < 12 ? "SKY1" : "SKY2");
         }
     }
     else
@@ -2107,8 +2190,7 @@ G_InitNew
             skytexturename = "SKY4";
             break;
         }
-        skytexturename = DEH_String(skytexturename);
-        skytexture = R_TextureNumForName(skytexturename);
+        G_SetSkyTexture(skytexturename);
     }
 
     G_DoLoadLevel ();

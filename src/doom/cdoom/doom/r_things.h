@@ -38,6 +38,7 @@ extern short*		mfloorclip;
 extern short*		mceilingclip;
 extern fixed_t		spryscale;
 extern fixed_t		sprtopscreen;
+extern int		maskedcolormaprow;
 
 extern fixed_t		pspritescale;
 extern fixed_t		pspriteiscale;

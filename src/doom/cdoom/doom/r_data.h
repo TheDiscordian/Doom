@@ -41,6 +41,7 @@ void R_PrecacheLevel (void);
 // Floor/ceiling opaque texture tiles,
 // lookup by name. For animation?
 int R_FlatNumForName(const char *name);
+byte *R_GetFlatData(int flatnum, boolean permanent);
 
 
 // Called by P_Ticker for switches and animations,
@@ -50,6 +51,7 @@ int R_CheckTextureNumForName(const char *name);
 
 
 extern int numflats;
+extern int numtextures;
 
 
 #endif

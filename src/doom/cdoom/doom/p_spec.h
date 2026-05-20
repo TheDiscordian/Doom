@@ -38,6 +38,12 @@ extern	int	levelTimeCount;
 // at game start
 void    P_InitPicAnims (void);
 
+// animation helpers used by the renderer's level precache
+void    P_ExpandAnimatedFlatPresence (char *present, int count);
+void    P_ExpandAnimatedTexturePresence (char *present, int count);
+boolean P_IsAnimatedFlat (int flatnum);
+boolean P_IsAnimatedTexture (int texturenum);
+
 // at map load
 void    P_SpawnSpecials (void);
 

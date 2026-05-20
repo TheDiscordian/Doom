@@ -245,6 +245,7 @@ void P_LoadSegs (int lump)
     }
 	
     W_ReleaseLumpNum(lump);
+    R_BuildSegRenderData();
 }
 
 

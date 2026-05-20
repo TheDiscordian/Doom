@@ -8,9 +8,9 @@
         "data_slots": [
             { "id": 1, "filename": "os.bin" },
             { "id": 2, "filename": "doom.elf" },
-            { "id": 3, "filename": "doomu/doomu.wad" },
-            { "id": 4, "filename": "rekkr/REKKR.WAD" },
-            { "id": 5, "filename": "rekkr/REKKR.DEH" },
+            { "id": 3, "filename": "doomu.wad" },
+            { "id": 4, "filename": "REKKR.WAD" },
+            { "id": 5, "filename": "REKKR.DEH" },
             { "id": 7, "filename": "bank.ofsf" },
             { "id": 9, "filename": "rekkr/REKKR.cfg" },
             { "id": 10, "filename": "rekkr/REKKR_0.sav" },

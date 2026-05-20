@@ -33,6 +33,7 @@
 #include "of_fastram.h"
 
 #include "r_local.h"
+#include "p_spec.h"
 #include "r_gpu.h"
 #include "r_perf.h"
 #include "r_sky.h"
@@ -441,7 +442,7 @@ R_CheckPlane
 //
 // R_MakeSpans
 //
-OF_FASTTEXT void
+static inline void __attribute__((always_inline))
 R_MakeSpans
 ( int		x,
   int		t1,
@@ -486,6 +487,8 @@ OF_FASTTEXT void R_DrawPlanes (void)
     int			stop;
     int			angle;
     int                 lumpnum;
+    int                 flatnum;
+    boolean             animated_flat;
 				
 #ifdef RANGECHECK
     if (ds_p - drawsegs > MAXDRAWSEGS)
@@ -535,8 +538,10 @@ OF_FASTTEXT void R_DrawPlanes (void)
 	}
 	
 	// regular flat
-        lumpnum = firstflat + flattranslation[pl->picnum];
-	ds_source = W_CacheLumpNum(lumpnum, PU_STATIC);
+        flatnum = flattranslation[pl->picnum];
+        animated_flat = P_IsAnimatedFlat(flatnum);
+        lumpnum = firstflat + flatnum;
+	ds_source = R_GetFlatData(flatnum, animated_flat);
 	
 	planeheight = abs(pl->height-viewz);
 	light = (pl->lightlevel >> LIGHTSEGSHIFT)+extralight;
@@ -563,7 +568,7 @@ OF_FASTTEXT void R_DrawPlanes (void)
 			pl->bottom[x]);
 	}
 	
-        if (!R_GPU_DeferLumpRelease(lumpnum))
+        if (!animated_flat && !R_GPU_DeferLumpRelease(lumpnum))
             W_ReleaseLumpNum(lumpnum);
     }
 }

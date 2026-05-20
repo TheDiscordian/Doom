@@ -34,6 +34,7 @@
 
 #include "r_local.h"
 #include "s_sound.h"
+#include "umapinfo.h"
 
 #include "doomstat.h"
 
@@ -1570,7 +1571,18 @@ static void WI_loadUnloadData(load_callback_t callback)
     {
 	for (i=0 ; i<NUMMAPS ; i++)
 	{
-	    DEH_snprintf(name, 9, "WILV%d%d", wbs->epsd, i);
+            const char *level_pic;
+
+            level_pic = UMAPINFO_LevelPic(wbs->epsd + 1, i + 1);
+
+            if (level_pic != NULL)
+            {
+                M_StringCopy(name, level_pic, sizeof(name));
+            }
+            else
+            {
+	        DEH_snprintf(name, 9, "WILV%d%d", wbs->epsd, i);
+            }
             callback(name, &lnames[i]);
 	}
 
@@ -1687,7 +1699,12 @@ static void WI_loadUnloadData(load_callback_t callback)
 
     // Background image
 
-    if (gamemode == commercial)
+    if (UMAPINFO_ExitPic(gameepisode, gamemap) != NULL)
+    {
+        M_StringCopy(name, UMAPINFO_ExitPic(gameepisode, gamemap),
+                     sizeof(name));
+    }
+    else if (gamemode == commercial)
     {
         M_StringCopy(name, DEH_String("INTERPIC"), sizeof(name));
     }

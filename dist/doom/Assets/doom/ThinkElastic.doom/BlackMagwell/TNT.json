@@ -1,0 +1,28 @@
+{
+    "instance": {
+        "magic": "APF_VER_1",
+        "variant_select": {
+            "id": 666,
+            "select": false
+        },
+        "data_slots": [
+            { "id": 1, "filename": "os.bin" },
+            { "id": 2, "filename": "doom.elf" },
+            { "id": 3, "filename": "TNT.WAD" },
+            { "id": 4, "filename": "BLACK_MAGWELL.wad" },
+            { "id": 7, "filename": "bank.ofsf" },
+            { "id": 9, "filename": "BlackMagwellTNT.cfg" },
+            { "id": 10, "filename": "BlackMagwellTNT_0.sav" },
+            { "id": 11, "filename": "BlackMagwellTNT_1.sav" },
+            { "id": 12, "filename": "BlackMagwellTNT_2.sav" },
+            { "id": 13, "filename": "BlackMagwellTNT_3.sav" },
+            { "id": 14, "filename": "BlackMagwellTNT_4.sav" },
+            { "id": 15, "filename": "BlackMagwellTNT_5.sav" },
+            { "id": 16, "filename": "BlackMagwellTNT_6.sav" },
+            { "id": 17, "filename": "BlackMagwellTNT_7.sav" },
+            { "id": 18, "filename": "BlackMagwellTNT_8.sav" },
+            { "id": 19, "filename": "BlackMagwellTNT_9.sav" },
+            { "id": 20, "filename": "BlackMagwellTNT.sav" }
+        ]
+    }
+}

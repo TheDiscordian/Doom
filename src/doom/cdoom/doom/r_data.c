@@ -130,6 +130,7 @@ struct texture_s
 int		firstflat;
 int		lastflat;
 int		numflats;
+static byte**	flatlumpdata;
 
 int		firstpatch;
 int		lastpatch;
@@ -151,6 +152,7 @@ int*			texturecompositesize;
 short**			texturecolumnlump;
 unsigned short**	texturecolumnofs;
 byte**			texturecomposite;
+static byte***		texturecolumnptr;
 
 // for global animation
 int*		flattranslation;
@@ -401,6 +403,39 @@ static byte *R_CachedLumpData(lumpindex_t lump)
     return W_CacheLumpNum(lump, PU_CACHE);
 }
 
+static void R_BuildTextureColumnPointers(int texnum)
+{
+    texture_t *texture = textures[texnum];
+    byte **columns;
+
+    if (texturecolumnptr[texnum] == NULL)
+    {
+        texturecolumnptr[texnum] =
+            Z_Malloc(texture->width * sizeof(**texturecolumnptr),
+                     PU_LEVEL, NULL);
+    }
+
+    columns = texturecolumnptr[texnum];
+
+    for (int x = 0; x < texture->width; x++)
+    {
+        int lump = texturecolumnlump[texnum][x];
+        int ofs = texturecolumnofs[texnum][x];
+
+        if (lump > 0)
+        {
+            columns[x] = R_CachedLumpData(lump) + ofs;
+        }
+        else
+        {
+            if (!texturecomposite[texnum])
+                R_GenerateComposite(texnum);
+
+            columns[x] = texturecomposite[texnum] + ofs;
+        }
+    }
+}
+
 byte*
 R_GetColumn
 ( int		tex,
@@ -410,6 +445,10 @@ R_GetColumn
     int		ofs;
 	
     col &= texturewidthmask[tex];
+
+    if (texturecolumnptr[tex] != NULL)
+	return texturecolumnptr[tex][col];
+
     lump = texturecolumnlump[tex][col];
     ofs = texturecolumnofs[tex][col];
     
@@ -543,9 +582,11 @@ void R_InitTextures (void)
     texturecolumnlump = Z_Malloc (numtextures * sizeof(*texturecolumnlump), PU_STATIC, 0);
     texturecolumnofs = Z_Malloc (numtextures * sizeof(*texturecolumnofs), PU_STATIC, 0);
     texturecomposite = Z_Malloc (numtextures * sizeof(*texturecomposite), PU_STATIC, 0);
+    texturecolumnptr = Z_Malloc (numtextures * sizeof(*texturecolumnptr), PU_STATIC, 0);
     texturecompositesize = Z_Malloc (numtextures * sizeof(*texturecompositesize), PU_STATIC, 0);
     texturewidthmask = Z_Malloc (numtextures * sizeof(*texturewidthmask), PU_STATIC, 0);
     textureheight = Z_Malloc (numtextures * sizeof(*textureheight), PU_STATIC, 0);
+    memset (texturecolumnptr, 0, numtextures * sizeof(*texturecolumnptr));
 
     //	Really complex printing shit...
     temp1 = W_GetNumForName (DEH_String("S_START"));  // P_???????
@@ -656,6 +697,8 @@ void R_InitFlats (void)
 	
     // Create translation table for global animation.
     flattranslation = Z_Malloc ((numflats+1)*sizeof(*flattranslation), PU_STATIC, 0);
+    flatlumpdata = Z_Malloc (numflats * sizeof(*flatlumpdata), PU_STATIC, 0);
+    memset (flatlumpdata, 0, numflats * sizeof(*flatlumpdata));
     
     for (i=0 ; i<numflats ; i++)
 	flattranslation[i] = i;
@@ -749,6 +792,26 @@ int R_FlatNumForName(const char *name)
     return i - firstflat;
 }
 
+byte *R_GetFlatData(int flatnum, boolean permanent)
+{
+    byte *data;
+    int lump;
+
+    if (flatnum < 0 || flatnum >= numflats)
+        I_Error("R_GetFlatData: bad flat %i", flatnum);
+
+    if (permanent && flatlumpdata[flatnum] != NULL)
+        return flatlumpdata[flatnum];
+
+    lump = firstflat + flatnum;
+    data = W_CacheLumpNum(lump, permanent ? PU_LEVEL : PU_STATIC);
+
+    if (permanent)
+        flatlumpdata[flatnum] = data;
+
+    return data;
+}
+
 
 
 
@@ -828,6 +891,12 @@ void R_PrecacheLevel (void)
     thinker_t*		th;
     spriteframe_t*	sf;
 
+    if (flatlumpdata != NULL)
+        memset(flatlumpdata, 0, numflats * sizeof(*flatlumpdata));
+
+    if (texturecolumnptr != NULL)
+        memset(texturecolumnptr, 0, numtextures * sizeof(*texturecolumnptr));
+
     if (demoplayback)
 	return;
     
@@ -840,6 +909,8 @@ void R_PrecacheLevel (void)
 	flatpresent[sectors[i].floorpic] = 1;
 	flatpresent[sectors[i].ceilingpic] = 1;
     }
+
+    P_ExpandAnimatedFlatPresence(flatpresent, numflats);
 	
     flatmemory = 0;
 
@@ -847,9 +918,20 @@ void R_PrecacheLevel (void)
     {
 	if (flatpresent[i])
 	{
+	    byte *data;
+
 	    lump = firstflat + i;
 	    flatmemory += lumpinfo[lump]->size;
-	    W_CacheLumpNum(lump, PU_CACHE);
+	    if (P_IsAnimatedFlat(i))
+	    {
+		data = W_CacheLumpNum(lump, PU_LEVEL);
+		flatlumpdata[i] = data;
+		R_GPU_TextureDataUpdated(data, lumpinfo[lump]->size);
+	    }
+	    else
+	    {
+		W_CacheLumpNum(lump, PU_CACHE);
+	    }
 	}
     }
 
@@ -873,6 +955,7 @@ void R_PrecacheLevel (void)
     //  a wall texture, with an episode dependend
     //  name.
     texturepresent[skytexture] = 1;
+    P_ExpandAnimatedTexturePresence(texturepresent, numtextures);
 	
     texturememory = 0;
     for (i=0 ; i<numtextures ; i++)
@@ -886,8 +969,29 @@ void R_PrecacheLevel (void)
 	{
 	    lump = texture->patches[j].patch;
 	    texturememory += lumpinfo[lump]->size;
-	    W_CacheLumpNum(lump , PU_CACHE);
+	    W_CacheLumpNum(lump, PU_LEVEL);
 	}
+
+	if (texturecompositesize[i] > 0)
+	{
+	    if (!texturecomposite[i])
+		R_GenerateComposite(i);
+
+	    if (texturecomposite[i])
+	    {
+		Z_ChangeTag(texturecomposite[i], PU_LEVEL);
+		texturememory += texturecompositesize[i];
+	    }
+
+	    // R_GenerateComposite touches source patches as PU_CACHE.
+	    for (j=0 ; j<texture->patchcount ; j++)
+	    {
+		lump = texture->patches[j].patch;
+		W_CacheLumpNum(lump, PU_LEVEL);
+	    }
+	}
+
+	R_BuildTextureColumnPointers(i);
     }
 
     Z_Free(texturepresent);

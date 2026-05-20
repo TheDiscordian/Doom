@@ -1,0 +1,28 @@
+{
+    "instance": {
+        "magic": "APF_VER_1",
+        "variant_select": {
+            "id": 666,
+            "select": false
+        },
+        "data_slots": [
+            { "id": 1, "filename": "os.bin" },
+            { "id": 2, "filename": "doom.elf" },
+            { "id": 3, "filename": "PLUTONIA.WAD" },
+            { "id": 4, "filename": "OHM_Dehacked.wad" },
+            { "id": 7, "filename": "bank.ofsf" },
+            { "id": 9, "filename": "OHMPlutonia.cfg" },
+            { "id": 10, "filename": "OHMPlutonia_0.sav" },
+            { "id": 11, "filename": "OHMPlutonia_1.sav" },
+            { "id": 12, "filename": "OHMPlutonia_2.sav" },
+            { "id": 13, "filename": "OHMPlutonia_3.sav" },
+            { "id": 14, "filename": "OHMPlutonia_4.sav" },
+            { "id": 15, "filename": "OHMPlutonia_5.sav" },
+            { "id": 16, "filename": "OHMPlutonia_6.sav" },
+            { "id": 17, "filename": "OHMPlutonia_7.sav" },
+            { "id": 18, "filename": "OHMPlutonia_8.sav" },
+            { "id": 19, "filename": "OHMPlutonia_9.sav" },
+            { "id": 20, "filename": "OHMPlutonia.sav" }
+        ]
+    }
+}

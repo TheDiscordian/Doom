@@ -859,6 +859,11 @@ static int gpu_colormap_row(const lighttable_t *map)
     return (int)(off >> 8);
 }
 
+int R_GPU_ColormapRow(const byte *map)
+{
+    return gpu_colormap_row((const lighttable_t *)map);
+}
+
 static void gpu_upload_fuzz_translucency(void)
 {
     const byte *darkmap;
@@ -1483,6 +1488,12 @@ boolean R_GPU_DeferLumpRelease(int lumpnum)
     if (!gpu_present || !gpu_frame_active ||
         (!gpu_pending && !gpu_has_pending_column_batches()))
         return false;
+
+    for (int i = 0; i < gpu_deferred_lump_count; i++)
+    {
+        if (gpu_deferred_lumps[i] == lumpnum)
+            return true;
+    }
 
     if (gpu_deferred_lump_count == GPU_DEFERRED_LUMPS)
     {

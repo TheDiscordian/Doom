@@ -64,6 +64,41 @@ static inline fixed_t FixedDiv(fixed_t a, fixed_t b)
 fixed_t FixedDiv	(fixed_t a, fixed_t b);
 #endif
 
+static inline fixed_t FixedDivPositive(fixed_t a, fixed_t b)
+{
+    uint32_t ua;
+    uint32_t ub;
+    uint32_t whole;
+    uint32_t rem;
+    uint32_t result;
+    uint32_t bit;
+
+    if (a < 0 || b <= 0)
+	return FixedDiv(a, b);
+
+    ua = (uint32_t)a;
+    ub = (uint32_t)b;
+
+    if ((ua >> 14) >= ub)
+	return INT_MAX;
+
+    whole = ua / ub;
+    rem = ua - whole * ub;
+    result = whole << FRACBITS;
+
+    for (bit = 1u << (FRACBITS - 1); bit != 0; bit >>= 1)
+    {
+	rem <<= 1;
+	if (rem >= ub)
+	{
+	    result |= bit;
+	    rem -= ub;
+	}
+    }
+
+    return (fixed_t)result;
+}
+
 
 
 #endif

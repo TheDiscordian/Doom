@@ -34,6 +34,7 @@
 #include "m_argv.h"
 
 #include "p_local.h"
+#include "umapinfo.h"
 #include "w_wad.h"
 #include "z_zone.h"
 
@@ -100,6 +101,7 @@ static boolean mus_paused;
 // Music currently being played
 
 static musicinfo_t *mus_playing = NULL;
+static musicinfo_t named_music = { NULL, -1, NULL, NULL };
 
 // Number of channels to use
 
@@ -228,6 +230,12 @@ void S_Start(void)
 
     // start new music for the level
     mus_paused = 0;
+
+    if (UMAPINFO_Music(gameepisode, gamemap) != NULL)
+    {
+        S_ChangeMusicName(UMAPINFO_Music(gameepisode, gamemap), true);
+        return;
+    }
 
     if (gamemode == commercial)
     {
@@ -700,6 +708,48 @@ void S_ChangeMusic(int musicnum, int looping)
     mus_playing = music;
 }
 
+void S_ChangeMusicName(const char *music_lump, int looping)
+{
+    char namebuf[9];
+    int lumpnum;
+    void *handle;
+
+    if (music_lump == NULL || music_lump[0] == '\0')
+    {
+        return;
+    }
+
+    M_StringCopy(namebuf, music_lump, sizeof(namebuf));
+
+    if (strncasecmp(namebuf, "D_", 2))
+    {
+        char prefixed[9];
+
+        M_snprintf(prefixed, sizeof(prefixed), "D_%s", namebuf);
+        M_StringCopy(namebuf, prefixed, sizeof(namebuf));
+    }
+
+    lumpnum = W_GetNumForName(namebuf);
+
+    if (mus_playing == &named_music && named_music.lumpnum == lumpnum)
+    {
+        return;
+    }
+
+    S_StopMusic();
+
+    named_music.name = NULL;
+    named_music.lumpnum = lumpnum;
+    named_music.data = W_CacheLumpNum(named_music.lumpnum, PU_STATIC);
+
+    handle = I_RegisterSong(named_music.data,
+                            W_LumpLength(named_music.lumpnum));
+    named_music.handle = handle;
+    I_PlaySong(handle, looping);
+
+    mus_playing = &named_music;
+}
+
 boolean S_MusicPlaying(void)
 {
     return I_MusicIsPlaying();
@@ -721,4 +771,3 @@ void S_StopMusic(void)
         mus_playing = NULL;
     }
 }
-

@@ -8,8 +8,8 @@
         "data_slots": [
             { "id": 1, "filename": "os.bin" },
             { "id": 2, "filename": "doom.elf" },
-            { "id": 3, "filename": "doom2/DOOM2.WAD" },
-            { "id": 4, "filename": "hellbound/HBOUND.WAD" },
+            { "id": 3, "filename": "DOOM2.WAD" },
+            { "id": 4, "filename": "HBOUND.WAD" },
             { "id": 7, "filename": "bank.ofsf" },
             { "id": 9, "filename": "hellbound/Hellbound.cfg" },
             { "id": 10, "filename": "hellbound/Hellbound_0.sav" },

@@ -20,6 +20,7 @@
 #ifndef __R_BSP__
 #define __R_BSP__
 
+#include "r_defs.h"
 
 
 extern seg_t*		curline;
@@ -46,6 +47,30 @@ extern lighttable_t**	hscalelight;
 extern lighttable_t**	vscalelight;
 extern lighttable_t**	dscalelight;
 
+typedef struct
+{
+    vertex_t*   v1;
+    vertex_t*   v2;
+    sector_t*   frontsector;
+    sector_t*   backsector;
+    side_t*     sidedef;
+    line_t*     linedef;
+    angle_t     angle;
+    angle_t     normalangle;
+    fixed_t     offset;
+    fixed_t     textureoffset;
+    fixed_t     rowoffset;
+    short       toptexture;
+    short       bottomtexture;
+    short       midtexture;
+    short       pegflags;
+    signed char lightbias;
+    byte        pad[3];
+} rendersegcache_t;
+
+extern rendersegcache_t* rendersegcache;
+extern rendersegcache_t* cursegcache;
+
 
 typedef void (*drawfunc_t) (int start, int stop);
 
@@ -54,6 +79,13 @@ typedef void (*drawfunc_t) (int start, int stop);
 void R_ClearClipSegs (void);
 void R_ClearDrawSegs (void);
 void R_BuildBSPRenderData (void);
+void R_BuildSegRenderData (void);
+void R_UpdateSegRenderData (void);
+void R_UpdateSectorPlaneCache (sector_t *sector,
+			       visplane_t *floor,
+			       visplane_t *ceiling,
+			       boolean update_floor,
+			       boolean update_ceiling);
 
 fixed_t R_VertexViewDist(vertex_t *vertex);
 

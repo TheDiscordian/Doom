@@ -29,6 +29,7 @@
 #include "v_video.h"
 #include "w_wad.h"
 #include "s_sound.h"
+#include "umapinfo.h"
 
 // Data.
 #include "d_main.h"
@@ -97,6 +98,7 @@ static textscreen_t textscreens[] =
 
 const char *finaletext;
 const char *finaleflat;
+static const char *finaleart;
 
 void	F_StartCast (void);
 void	F_CastTicker (void);
@@ -114,6 +116,9 @@ void F_StartFinale (void)
     gamestate = GS_FINALE;
     viewactive = false;
     automapactive = false;
+    finaletext = NULL;
+    finaleflat = NULL;
+    finaleart = NULL;
 
     if (logical_gamemission == doom)
     {
@@ -124,26 +129,38 @@ void F_StartFinale (void)
         S_ChangeMusic(mus_read_m, true);
     }
 
+    finaletext = UMAPINFO_InterText(gameepisode, gamemap);
+    finaleflat = "FLOOR4_8";
+    finaleart = UMAPINFO_EndPic(gameepisode, gamemap);
+
     // Find the right screen and set the text and background
 
-    for (i=0; i<arrlen(textscreens); ++i)
+    if (finaletext == NULL)
     {
-        textscreen_t *screen = &textscreens[i];
-
-        // Hack for Chex Quest
-
-        if (gameversion == exe_chex && screen->mission == doom)
+        for (i=0; i<arrlen(textscreens); ++i)
         {
-            screen->level = 5;
-        }
+            textscreen_t *screen = &textscreens[i];
 
-        if (logical_gamemission == screen->mission
-         && (logical_gamemission != doom || gameepisode == screen->episode)
-         && gamemap == screen->level)
-        {
-            finaletext = screen->text;
-            finaleflat = screen->background;
+            // Hack for Chex Quest
+
+            if (gameversion == exe_chex && screen->mission == doom)
+            {
+                screen->level = 5;
+            }
+
+            if (logical_gamemission == screen->mission
+             && (logical_gamemission != doom || gameepisode == screen->episode)
+             && gamemap == screen->level)
+            {
+                finaletext = screen->text;
+                finaleflat = screen->background;
+            }
         }
+    }
+
+    if (finaletext == NULL)
+    {
+        finaletext = "";
     }
 
     // Do dehacked substitutions of strings
@@ -661,6 +678,12 @@ void F_BunnyScroll (void)
 static void F_ArtScreenDrawer(void)
 {
     const char *lumpname;
+
+    if (finaleart != NULL)
+    {
+        V_DrawPatch(0, 0, W_CacheLumpName(DEH_String(finaleart), PU_CACHE));
+        return;
+    }
     
     if (gameepisode == 3)
     {
@@ -714,5 +737,3 @@ void F_Drawer (void)
             break;
     }
 }
-
-

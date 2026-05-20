@@ -8,7 +8,7 @@
         "data_slots": [
             { "id": 1, "filename": "os.bin" },
             { "id": 2, "filename": "doom.elf" },
-            { "id": 3, "filename": "plutonia/PLUTONIA.WAD" },
+            { "id": 3, "filename": "PLUTONIA.WAD" },
             { "id": 7, "filename": "bank.ofsf" },
             { "id": 9, "filename": "plutonia/Plutonia.cfg" },
             { "id": 10, "filename": "plutonia/Plutonia_0.sav" },

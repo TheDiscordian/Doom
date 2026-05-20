@@ -64,6 +64,7 @@
 #include "hu_stuff.h"
 #include "wi_stuff.h"
 #include "st_stuff.h"
+#include "umapinfo.h"
 #include "am_map.h"
 #include "net_client.h"
 #include "net_dedicated.h"
@@ -1814,6 +1815,8 @@ void D_DoomMain (void)
 
         printf("  loaded %i DEHACKED lumps from PWAD files.\n", loaded);
     }
+
+    UMAPINFO_LoadLumps();
 
     // Set the gamedescription string. This is only possible now that
     // we've finished loading Dehacked patches.

@@ -1,0 +1,29 @@
+{
+    "instance": {
+        "magic": "APF_VER_1",
+        "variant_select": {
+            "id": 666,
+            "select": false
+        },
+        "data_slots": [
+            { "id": 1, "filename": "os.bin" },
+            { "id": 2, "filename": "doom.elf" },
+            { "id": 3, "filename": "PLUTONIA.WAD" },
+            { "id": 4, "filename": "ALDENTE.wad" },
+            { "id": 5, "filename": "ALDENTE.deh" },
+            { "id": 7, "filename": "bank.ofsf" },
+            { "id": 9, "filename": "AldentePlutonia.cfg" },
+            { "id": 10, "filename": "AldentePlutonia_0.sav" },
+            { "id": 11, "filename": "AldentePlutonia_1.sav" },
+            { "id": 12, "filename": "AldentePlutonia_2.sav" },
+            { "id": 13, "filename": "AldentePlutonia_3.sav" },
+            { "id": 14, "filename": "AldentePlutonia_4.sav" },
+            { "id": 15, "filename": "AldentePlutonia_5.sav" },
+            { "id": 16, "filename": "AldentePlutonia_6.sav" },
+            { "id": 17, "filename": "AldentePlutonia_7.sav" },
+            { "id": 18, "filename": "AldentePlutonia_8.sav" },
+            { "id": 19, "filename": "AldentePlutonia_9.sav" },
+            { "id": 20, "filename": "AldentePlutonia.sav" }
+        ]
+    }
+}

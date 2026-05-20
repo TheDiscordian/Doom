@@ -58,6 +58,7 @@
 #include "p_setup.h"
 
 #include "s_sound.h"
+#include "umapinfo.h"
 
 #include "doomstat.h"
 
@@ -290,16 +291,15 @@ enum
     ep2,
     ep3,
     ep4,
+    ep5,
+    ep6,
+    ep7,
+    ep8,
     ep_end
 } episodes_e;
 
-menuitem_t EpisodeMenu[]=
-{
-    {1,"M_EPI1", M_Episode,'k'},
-    {1,"M_EPI2", M_Episode,'t'},
-    {1,"M_EPI3", M_Episode,'i'},
-    {1,"M_EPI4", M_Episode,'t'}
-};
+static int episode_menu_episode[ep_end];
+menuitem_t EpisodeMenu[ep_end];
 
 menu_t  EpiDef =
 {
@@ -983,6 +983,94 @@ void M_DrawEpisode(void)
     V_DrawPatchDirect(54, 38, W_CacheLumpName(DEH_String("M_EPISOD"), PU_CACHE));
 }
 
+static void M_AddEpisodeMenuItem(int episode,
+                                 const char *patch,
+                                 const char *title,
+                                 char key)
+{
+    int index = EpiDef.numitems;
+
+    if (index >= ep_end)
+    {
+        return;
+    }
+
+    episode_menu_episode[index] = episode;
+    EpisodeMenu[index].status = 1;
+    EpisodeMenu[index].routine = M_Episode;
+    EpisodeMenu[index].alphaKey = key;
+
+    if (patch != NULL && patch[0] != '\0')
+    {
+        M_StringCopy(EpisodeMenu[index].name,
+                     patch, sizeof(EpisodeMenu[index].name));
+    }
+    else
+    {
+        M_snprintf(EpisodeMenu[index].name,
+                   sizeof(EpisodeMenu[index].name),
+                   "M_EPI%d", episode);
+    }
+
+    if (title == NULL)
+    {
+        title = "";
+    }
+
+    ++EpiDef.numitems;
+}
+
+static void M_UpdateEpisodeMenu(void)
+{
+    int base_episodes;
+    int episode;
+
+    EpiDef.numitems = 0;
+
+    if (gameversion == exe_chex)
+    {
+        base_episodes = 1;
+    }
+    else if (gameversion < exe_ultimate)
+    {
+        base_episodes = 3;
+    }
+    else
+    {
+        base_episodes = 4;
+    }
+
+    for (episode = 1; episode <= base_episodes; ++episode)
+    {
+        static const char keys[] = { 'k', 't', 'i', 't' };
+        char patch[9];
+
+        M_snprintf(patch, sizeof(patch), "M_EPI%d", episode);
+        M_AddEpisodeMenuItem(episode, patch, NULL, keys[episode - 1]);
+    }
+
+    for (episode = base_episodes + 1;
+         episode <= UMAPINFO_MAX_EPISODES;
+         ++episode)
+    {
+        const umapinfo_episode_t *info = UMAPINFO_GetEpisode(episode);
+        char marker[9];
+
+        M_snprintf(marker, sizeof(marker), "E%dM1", episode);
+
+        if (info == NULL && W_CheckNumForName(marker) < 0)
+        {
+            continue;
+        }
+
+        M_AddEpisodeMenuItem(episode,
+                             info != NULL ? info->patch : NULL,
+                             info != NULL ? info->name : NULL,
+                             info != NULL && info->key != '\0'
+                             ? info->key : '0' + episode);
+    }
+}
+
 void M_VerifyNightmare(int key)
 {
     if (key != key_menu_confirm)
@@ -1014,7 +1102,7 @@ void M_Episode(int choice)
 	return;
     }
 
-    epi = choice;
+    epi = episode_menu_episode[choice] - 1;
     M_SetupNextMenu(&NewDef);
 }
 
@@ -2090,6 +2178,17 @@ void M_Drawer (void)
 	{
 	    V_DrawPatchDirect (x, y, W_CacheLumpName(name, PU_CACHE));
 	}
+        else if (currentMenu == &EpiDef)
+        {
+            const umapinfo_episode_t *info;
+
+            info = UMAPINFO_GetEpisode(episode_menu_episode[i]);
+
+            if (info != NULL && info->name[0] != '\0')
+            {
+                M_WriteText(x, y, info->name);
+            }
+        }
 	y += LINEHEIGHT;
     }
 
@@ -2181,19 +2280,7 @@ void M_Init (void)
         ReadMenu1[rdthsempty1].routine = M_FinishReadThis;
     }
 
-    // Versions of doom.exe before the Ultimate Doom release only had
-    // three episodes; if we're emulating one of those then don't try
-    // to show episode four. If we are, then do show episode four
-    // (should crash if missing).
-    if (gameversion < exe_ultimate)
-    {
-        EpiDef.numitems--;
-    }
-    // chex.exe shows only one episode.
-    else if (gameversion == exe_chex)
-    {
-        EpiDef.numitems = 1;
-    }
+    M_UpdateEpisodeMenu();
 
     opldev = M_CheckParm("-opldev") > 0;
 }

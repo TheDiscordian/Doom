@@ -63,6 +63,7 @@ void S_StartMusic(int music_id);
 // Start music using <music_id> from sounds.h,
 //  and set whether looping
 void S_ChangeMusic(int music_id, int looping);
+void S_ChangeMusicName(const char *music_lump, int looping);
 
 // query if music is playing
 boolean S_MusicPlaying(void);
@@ -86,4 +87,3 @@ void S_SetSfxVolume(int volume);
 extern int snd_channels;
 
 #endif
-

@@ -8,7 +8,7 @@
         "data_slots": [
             { "id": 1, "filename": "os.bin" },
             { "id": 2, "filename": "doom.elf" },
-            { "id": 3, "filename": "doomu/doomu.wad" },
+            { "id": 3, "filename": "doomu.wad" },
             { "id": 7, "filename": "bank.ofsf" },
             { "id": 9, "filename": "doomu/UltimateDoom.cfg" },
             { "id": 10, "filename": "doomu/UltimateDoom_0.sav" },

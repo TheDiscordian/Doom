@@ -34,6 +34,7 @@
 #include "m_controls.h"
 #include "m_misc.h"
 #include "m_menu.h"
+#include "umapinfo.h"
 #include "w_wad.h"
 
 #include "s_sound.h"
@@ -335,7 +336,14 @@ const char *mapnames_commercial[] =
 
 const char *HU_GetLevelName(void)
 {
-    const char *s = NULL;
+    const char *s = UMAPINFO_LevelName(gameepisode, gamemap);
+
+    if (s != NULL)
+    {
+        return s;
+    }
+
+    s = NULL;
 
     switch (logical_gamemission)
     {

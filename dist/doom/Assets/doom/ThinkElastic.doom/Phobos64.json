@@ -8,8 +8,8 @@
         "data_slots": [
             { "id": 1, "filename": "os.bin" },
             { "id": 2, "filename": "doom.elf" },
-            { "id": 3, "filename": "doom2/DOOM2.WAD" },
-            { "id": 4, "filename": "phobos64/PHOBOS63.WAD" },
+            { "id": 3, "filename": "DOOM2.WAD" },
+            { "id": 4, "filename": "PHOBOS63.WAD" },
             { "id": 7, "filename": "bank.ofsf" },
             { "id": 9, "filename": "phobos64/Phobos64.cfg" },
             { "id": 10, "filename": "phobos64/Phobos64_0.sav" },

@@ -22,6 +22,7 @@
 
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "doomdef.h"
 #include "doomstat.h"
@@ -127,6 +128,163 @@ animdef_t		animdefs[] =
 anim_t		anims[MAXANIMS];
 anim_t*		lastanim;
 
+static byte*	animatedflats;
+static byte*	animatedtextures;
+static int	animatedflatcount;
+static int	animatedtexturecount;
+static int	animatedflatalloc;
+static int	animatedtexturealloc;
+
+static boolean P_AnimContainsPic(anim_t *anim, int picnum)
+{
+    return picnum >= anim->basepic
+        && picnum < anim->basepic + anim->numpics;
+}
+
+static boolean P_AnimRangeIsPresent(anim_t *anim, char *present, int count)
+{
+    int end = anim->basepic + anim->numpics;
+
+    if (anim->basepic < 0 || end > count)
+        return false;
+
+    for (int i = anim->basepic; i < end; i++)
+    {
+        if (present[i])
+            return true;
+    }
+
+    return false;
+}
+
+static void P_ExpandAnimatedPresence(char *present, int count, boolean texture)
+{
+    anim_t *anim;
+
+    if (present == NULL)
+        return;
+
+    for (anim = anims; anim < lastanim; anim++)
+    {
+        int end;
+
+        if (anim->istexture != texture)
+            continue;
+
+        if (!P_AnimRangeIsPresent(anim, present, count))
+            continue;
+
+        end = anim->basepic + anim->numpics;
+        for (int i = anim->basepic; i < end; i++)
+            present[i] = 1;
+    }
+}
+
+void P_ExpandAnimatedFlatPresence(char *present, int count)
+{
+    P_ExpandAnimatedPresence(present, count, false);
+}
+
+void P_ExpandAnimatedTexturePresence(char *present, int count)
+{
+    P_ExpandAnimatedPresence(present, count, true);
+}
+
+boolean P_IsAnimatedFlat(int flatnum)
+{
+    anim_t *anim;
+
+    if (animatedflats != NULL)
+    {
+        return flatnum >= 0
+            && flatnum < animatedflatcount
+            && animatedflats[flatnum] != 0;
+    }
+
+    for (anim = anims; anim < lastanim; anim++)
+    {
+        if (!anim->istexture && P_AnimContainsPic(anim, flatnum))
+            return true;
+    }
+
+    return false;
+}
+
+boolean P_IsAnimatedTexture(int texturenum)
+{
+    anim_t *anim;
+
+    if (animatedtextures != NULL)
+    {
+        return texturenum >= 0
+            && texturenum < animatedtexturecount
+            && animatedtextures[texturenum] != 0;
+    }
+
+    for (anim = anims; anim < lastanim; anim++)
+    {
+        if (anim->istexture && P_AnimContainsPic(anim, texturenum))
+            return true;
+    }
+
+    return false;
+}
+
+static void P_BuildAnimatedPicMaps(void)
+{
+    anim_t *anim;
+
+    animatedflatcount = numflats;
+    animatedtexturecount = numtextures;
+
+    if (animatedflatcount > 0)
+    {
+        if (animatedflats == NULL || animatedflatalloc < animatedflatcount)
+        {
+            animatedflats = Z_Malloc(animatedflatcount, PU_STATIC, NULL);
+            animatedflatalloc = animatedflatcount;
+        }
+
+        memset(animatedflats, 0, animatedflatcount);
+    }
+
+    if (animatedtexturecount > 0)
+    {
+        if (animatedtextures == NULL || animatedtexturealloc < animatedtexturecount)
+        {
+            animatedtextures = Z_Malloc(animatedtexturecount, PU_STATIC, NULL);
+            animatedtexturealloc = animatedtexturecount;
+        }
+
+        memset(animatedtextures, 0, animatedtexturecount);
+    }
+
+    for (anim = anims; anim < lastanim; anim++)
+    {
+        byte *map;
+        int count;
+        int end;
+
+        if (anim->istexture)
+        {
+            map = animatedtextures;
+            count = animatedtexturecount;
+        }
+        else
+        {
+            map = animatedflats;
+            count = animatedflatcount;
+        }
+
+        end = anim->basepic + anim->numpics;
+        if (map == NULL || anim->basepic < 0 || end > count)
+            continue;
+
+        for (int i = anim->basepic; i < end; i++)
+            map[i] = 1;
+    }
+}
+
 
 //
 //      Animating line specials
@@ -183,6 +341,8 @@ void P_InitPicAnims (void)
 	lastanim->speed = animdefs[i].speed;
 	lastanim++;
     }
+
+    P_BuildAnimatedPicMaps();
 	
 }
 

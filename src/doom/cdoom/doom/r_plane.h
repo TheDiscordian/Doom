@@ -49,14 +49,6 @@ R_MapPlane
   int		x1,
   int		x2 );
 
-void
-R_MakeSpans
-( int		x,
-  int		t1,
-  int		b1,
-  int		t2,
-  int		b2 );
-
 void R_DrawPlanes (void);
 
 visplane_t*

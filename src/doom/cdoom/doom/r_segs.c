@@ -106,22 +106,20 @@ R_RenderMaskedSegRange
     column_t*	col;
     int		lightnum;
     int		texnum;
+    rendersegcache_t *cache;
     
     // Calculate light table.
     // Use different light tables
     //   for horizontal / vertical / diagonal. Diagonal?
     // OPTIMIZE: get rid of LIGHTSEGSHIFT globally
     curline = ds->curline;
-    frontsector = curline->frontsector;
-    backsector = curline->backsector;
-    texnum = texturetranslation[curline->sidedef->midtexture];
+    cache = &rendersegcache[curline - segs];
+    frontsector = cache->frontsector;
+    backsector = cache->backsector;
+    texnum = texturetranslation[cache->midtexture];
 	
     lightnum = (frontsector->lightlevel >> LIGHTSEGSHIFT)+extralight;
-
-    if (curline->v1->y == curline->v2->y)
-	lightnum--;
-    else if (curline->v1->x == curline->v2->x)
-	lightnum++;
+    lightnum += cache->lightbias;
 
     if (lightnum < 0)
     {
@@ -147,7 +145,7 @@ R_RenderMaskedSegRange
     mceilingclip = ds->sprtopclip;
     
     // find positioning
-    if (curline->linedef->flags & ML_DONTPEGBOTTOM)
+    if (cache->pegflags & ML_DONTPEGBOTTOM)
     {
 	dc_texturemid = frontsector->floorheight > backsector->floorheight
 	    ? frontsector->floorheight : backsector->floorheight;
@@ -159,10 +157,17 @@ R_RenderMaskedSegRange
 	    ? frontsector->ceilingheight : backsector->ceilingheight;
 	dc_texturemid = dc_texturemid - viewz;
     }
-    dc_texturemid += curline->sidedef->rowoffset;
+    dc_texturemid += cache->rowoffset;
 			
     if (fixedcolormap)
+    {
 	dc_colormap = fixedcolormap;
+	maskedcolormaprow = R_GPU_ColormapRow((const byte *)dc_colormap);
+    }
+    else
+    {
+	maskedcolormaprow = -1;
+    }
     
     // draw the columns
     for (dc_x = x1 ; dc_x <= x2 ; dc_x++)
@@ -178,6 +183,7 @@ R_RenderMaskedSegRange
 		    index = MAXLIGHTSCALE-1;
 
 		dc_colormap = walllights[index];
+		maskedcolormaprow = walllightrows[index];
 	    }
 			
 	    sprtopscreen = centeryfrac - FixedMul(dc_texturemid, spryscale);
@@ -192,6 +198,8 @@ R_RenderMaskedSegRange
 	}
 	spryscale += rw_scalestep;
     }
+
+    maskedcolormaprow = -1;
 	
 }
 
@@ -211,25 +219,32 @@ R_RenderMaskedSegRange
 #define WALL_COLUMN_BATCH_LANES 8
 
 static inline fixed_t __attribute__((always_inline))
-R_PrepareSegColumn(int x, fixed_t scale, int *lightrow)
+R_TextureColumnForX(int x)
 {
     angle_t angle;
-    unsigned index;
     fixed_t texturecolumn;
 
     angle = (rw_centerangle + xtoviewangle[x])>>ANGLETOFINESHIFT;
     texturecolumn = rw_offset-FixedMul(finetangent[angle],rw_distance);
-    texturecolumn >>= FRACBITS;
+
+    return texturecolumn >> FRACBITS;
+}
+
+static inline void __attribute__((always_inline))
+R_PrepareDrawColumn(fixed_t scale, int *iscale, int *lightrow,
+		    lighttable_t **colormap)
+{
+    unsigned index;
 
     index = scale>>LIGHTSCALESHIFT;
     if (index >= MAXLIGHTSCALE)
 	index = MAXLIGHTSCALE-1;
 
     dc_colormap = walllights[index];
+    *colormap = dc_colormap;
     *lightrow = walllightrows[index];
     dc_iscale = 0xffffffffu / (unsigned)scale;
-
-    return texturecolumn;
+    *iscale = dc_iscale;
 }
 
 static void R_DrawSegColumn(int x, int texnum, fixed_t texturecolumn,
@@ -257,6 +272,7 @@ typedef struct
 {
     int x;
     int lanes;
+    int same_range;
     int yl[WALL_COLUMN_BATCH_LANES];
     int yh[WALL_COLUMN_BATCH_LANES];
     const byte *source[WALL_COLUMN_BATCH_LANES];
@@ -272,10 +288,29 @@ OF_FASTTEXT static void R_FlushWallColumnBatch(wall_column_batch_t *batch)
     if (batch->lanes <= 0)
 	return;
 
-    if (!R_GPU_DrawColumnLightVarBatchDirect(batch->x, batch->lanes,
-					     batch->yl, batch->yh,
-					     batch->source, batch->t,
-					     batch->tstep, batch->light))
+    boolean drawn;
+
+    if (batch->same_range)
+    {
+	drawn = R_GPU_DrawColumnLightBatchDirect(batch->x,
+						 batch->yl[0],
+						 batch->yh[0],
+						 batch->lanes,
+						 batch->source,
+						 batch->t,
+						 batch->tstep,
+						 batch->light);
+    }
+    else
+    {
+	drawn = R_GPU_DrawColumnLightVarBatchDirect(batch->x, batch->lanes,
+						    batch->yl, batch->yh,
+						    batch->source, batch->t,
+						    batch->tstep,
+						    batch->light);
+    }
+
+    if (!drawn)
     {
 	for (int i = 0; i < batch->lanes; i++)
 	{
@@ -322,6 +357,11 @@ R_AddWallColumnBatch(wall_column_batch_t *batch,
     if (batch->lanes == 0)
     {
 	batch->x = x;
+	batch->same_range = 1;
+    }
+    else if (yl != batch->yl[0] || yh != batch->yh[0])
+    {
+	batch->same_range = 0;
     }
 
     lane = batch->lanes++;
@@ -347,6 +387,7 @@ OF_FASTTEXT void R_RenderSegLoop (void)
     int			x;
     int			stopx;
     int			lightrow;
+    int			iscale;
     fixed_t		scale;
     fixed_t		scalestep;
     fixed_t		topf;
@@ -364,7 +405,8 @@ OF_FASTTEXT void R_RenderSegLoop (void)
     short*		masked_col;
     boolean		do_markceiling;
     boolean		do_markfloor;
-    boolean             column_ready;
+    boolean             texturecolumn_ready;
+    boolean             drawcolumn_ready;
     lighttable_t*	column_colormap;
     wall_column_batch_t upper_batch;
     wall_column_batch_t lower_batch;
@@ -396,7 +438,8 @@ OF_FASTTEXT void R_RenderSegLoop (void)
 
     for ( ; x < stopx ; x++)
     {
-	column_ready = false;
+	texturecolumn_ready = false;
+	drawcolumn_ready = false;
 
 	// mark floor / ceiling areas
 	yl = (topf+HEIGHTUNIT-1)>>HEIGHTBITS;
@@ -442,11 +485,13 @@ OF_FASTTEXT void R_RenderSegLoop (void)
 	if (midtexture)
 	{
 	    // single sided line
-	    texturecolumn = R_PrepareSegColumn(x, scale, &lightrow);
-	    column_colormap = dc_colormap;
-	    column_ready = true;
+	    texturecolumn = R_TextureColumnForX(x);
+	    texturecolumn_ready = true;
+	    R_PrepareDrawColumn(scale, &iscale, &lightrow,
+				&column_colormap);
+	    drawcolumn_ready = true;
 	    R_AddWallColumnBatch(&upper_batch, x, midtexture, texturecolumn,
-				 rw_midtexturemid, yl, yh, dc_iscale,
+				 rw_midtexturemid, yl, yh, iscale,
 				 lightrow, column_colormap);
 	    ceiling_clip[x] = viewheight;
 	    floor_clip[x] = -1;
@@ -465,15 +510,20 @@ OF_FASTTEXT void R_RenderSegLoop (void)
 
 		if (mid >= yl)
 		{
-		    if (!column_ready)
+		    if (!texturecolumn_ready)
 		    {
-			texturecolumn = R_PrepareSegColumn(x, scale, &lightrow);
-			column_colormap = dc_colormap;
-			column_ready = true;
+			texturecolumn = R_TextureColumnForX(x);
+			texturecolumn_ready = true;
+		    }
+		    if (!drawcolumn_ready)
+		    {
+			R_PrepareDrawColumn(scale, &iscale, &lightrow,
+					    &column_colormap);
+			drawcolumn_ready = true;
 		    }
 		    R_AddWallColumnBatch(&upper_batch, x, toptexture,
 					 texturecolumn, rw_toptexturemid,
-					 yl, mid, dc_iscale, lightrow,
+					 yl, mid, iscale, lightrow,
 					 column_colormap);
 		    ceiling_clip[x] = mid;
 		}
@@ -499,15 +549,20 @@ OF_FASTTEXT void R_RenderSegLoop (void)
 		
 		if (mid <= yh)
 		{
-		    if (!column_ready)
+		    if (!texturecolumn_ready)
 		    {
-			texturecolumn = R_PrepareSegColumn(x, scale, &lightrow);
-			column_colormap = dc_colormap;
-			column_ready = true;
+			texturecolumn = R_TextureColumnForX(x);
+			texturecolumn_ready = true;
+		    }
+		    if (!drawcolumn_ready)
+		    {
+			R_PrepareDrawColumn(scale, &iscale, &lightrow,
+					    &column_colormap);
+			drawcolumn_ready = true;
 		    }
 		    R_AddWallColumnBatch(&lower_batch, x, bottomtexture,
 					 texturecolumn, rw_bottomtexturemid,
-					 mid, yh, dc_iscale, lightrow,
+					 mid, yh, iscale, lightrow,
 					 column_colormap);
 		    floor_clip[x] = mid;
 		}
@@ -523,11 +578,10 @@ OF_FASTTEXT void R_RenderSegLoop (void)
 			
 	    if (maskedtexture)
 	    {
-		if (!column_ready)
+		if (!texturecolumn_ready)
 		{
-		    texturecolumn = R_PrepareSegColumn(x, scale, &lightrow);
-		    column_colormap = dc_colormap;
-		    column_ready = true;
+		    texturecolumn = R_TextureColumnForX(x);
+		    texturecolumn_ready = true;
 		}
 		// save texturecol
 		//  for backdrawing of masked mid texture
@@ -660,6 +714,17 @@ R_StoreWallRange
     angle_t		distangle, offsetangle;
     fixed_t		vtop;
     int			lightnum;
+    fixed_t             side_textureoffset;
+    fixed_t             side_rowoffset;
+    short               side_toptexture;
+    short               side_bottomtexture;
+    short               side_midtexture;
+    short               line_pegflags;
+    signed char         line_lightbias;
+    rendersegcache_t   *cache;
+    vertex_t           *seg_v1;
+    angle_t             seg_normalangle;
+    fixed_t             seg_offset;
     unsigned int        perf_start;
 
     // don't overflow and crash
@@ -676,8 +741,20 @@ R_StoreWallRange
 	I_Error ("Bad R_RenderWallRange: %i to %i", start , stop);
 #endif
     
-    sidedef = curline->sidedef;
-    linedef = curline->linedef;
+    cache = cursegcache;
+
+    sidedef = cache->sidedef;
+    linedef = cache->linedef;
+    side_textureoffset = cache->textureoffset;
+    side_rowoffset = cache->rowoffset;
+    side_toptexture = cache->toptexture;
+    side_bottomtexture = cache->bottomtexture;
+    side_midtexture = cache->midtexture;
+    line_pegflags = cache->pegflags;
+    line_lightbias = cache->lightbias;
+    seg_v1 = cache->v1;
+    seg_normalangle = cache->normalangle;
+    seg_offset = cache->offset;
 
     // mark the segment as visible for auto map
     linedef->flags |= ML_MAPPED;
@@ -696,13 +773,13 @@ R_StoreWallRange
     if (!backsector)
     {
 	// single sided line
-	midtexture = texturetranslation[sidedef->midtexture];
+	midtexture = texturetranslation[side_midtexture];
 	// a single sided line is terminal, so it must mark ends
 	markfloor = markceiling = true;
-	if (linedef->flags & ML_DONTPEGBOTTOM)
+	if (line_pegflags & ML_DONTPEGBOTTOM)
 	{
 	    vtop = frontsector->floorheight +
-		textureheight[sidedef->midtexture];
+		textureheight[side_midtexture];
 	    // bottom of texture at bottom
 	    rw_midtexturemid = vtop - viewz;	
 	}
@@ -711,7 +788,7 @@ R_StoreWallRange
 	    // top of texture at top
 	    rw_midtexturemid = worldtop;
 	}
-	rw_midtexturemid += sidedef->rowoffset;
+	rw_midtexturemid += side_rowoffset;
 
 	ds_p->silhouette = SIL_BOTH;
 	ds_p->sprtopclip = screenheightarray;
@@ -810,8 +887,8 @@ R_StoreWallRange
 	if (worldhigh < worldtop)
 	{
 	    // top texture
-	    toptexture = texturetranslation[sidedef->toptexture];
-	    if (linedef->flags & ML_DONTPEGTOP)
+	    toptexture = texturetranslation[side_toptexture];
+	    if (line_pegflags & ML_DONTPEGTOP)
 	    {
 		// top of texture at top
 		rw_toptexturemid = worldtop;
@@ -820,7 +897,7 @@ R_StoreWallRange
 	    {
 		vtop =
 		    backsector->ceilingheight
-		    + textureheight[sidedef->toptexture];
+		    + textureheight[side_toptexture];
 		
 		// bottom of texture
 		rw_toptexturemid = vtop - viewz;	
@@ -829,9 +906,9 @@ R_StoreWallRange
 	if (worldlow > worldbottom)
 	{
 	    // bottom texture
-	    bottomtexture = texturetranslation[sidedef->bottomtexture];
+	    bottomtexture = texturetranslation[side_bottomtexture];
 
-	    if (linedef->flags & ML_DONTPEGBOTTOM )
+	    if (line_pegflags & ML_DONTPEGBOTTOM)
 	    {
 		// bottom of texture at bottom
 		// top of texture at top
@@ -840,11 +917,11 @@ R_StoreWallRange
 	    else	// top of texture at top
 		rw_bottomtexturemid = worldlow;
 	}
-	rw_toptexturemid += sidedef->rowoffset;
-	rw_bottomtexturemid += sidedef->rowoffset;
+	rw_toptexturemid += side_rowoffset;
+	rw_bottomtexturemid += side_rowoffset;
 	
 	// allocate space for masked texture tables
-	if (sidedef->midtexture)
+	if (side_midtexture)
 	{
 	    // masked midtexture
 	    maskedtexture = true;
@@ -864,11 +941,7 @@ R_StoreWallRange
 	if (!fixedcolormap)
 	{
 	    lightnum = (frontsector->lightlevel >> LIGHTSEGSHIFT)+extralight;
-
-	    if (curline->v1->y == curline->v2->y)
-		lightnum--;
-	    else if (curline->v1->x == curline->v2->x)
-		lightnum++;
+	    lightnum += line_lightbias;
 
 	    if (lightnum < 0)		
 	    {
@@ -924,14 +997,14 @@ R_StoreWallRange
 	R_PERF_DETAIL_COUNT(R_PERF_DETAIL_WALL_PLANE);
 
     // calculate rw_distance for scale calculation
-    rw_normalangle = curline->angle + ANG90;
+    rw_normalangle = seg_normalangle;
     offsetangle = abs((int)rw_normalangle-(int)rw_angle1);
 
     if (offsetangle > ANG90)
 	offsetangle = ANG90;
 
     distangle = ANG90 - offsetangle;
-    hyp = R_VertexViewDist(curline->v1);
+    hyp = R_VertexViewDist(seg_v1);
     sineval = finesine[distangle>>ANGLETOFINESHIFT];
     rw_distance = FixedMul (hyp, sineval);
 
@@ -958,8 +1031,8 @@ R_StoreWallRange
 	    fixed_t		trx,try;
 	    fixed_t		gxt,gyt;
 
-	    trx = curline->v1->x - viewx;
-	    try = curline->v1->y - viewy;
+	    trx = seg_v1->x - viewx;
+	    try = seg_v1->y - viewy;
 
 	    gxt = FixedMul(trx,viewcos);
 	    gyt = -FixedMul(try,viewsin);
@@ -985,7 +1058,7 @@ R_StoreWallRange
 	if (rw_normalangle-rw_angle1 < ANG180)
 	    rw_offset = -rw_offset;
 
-	rw_offset += sidedef->textureoffset + curline->offset;
+	rw_offset += side_textureoffset + seg_offset;
 	rw_centerangle = ANG90 + viewangle - rw_normalangle;
     }
 
@@ -1020,10 +1093,38 @@ R_StoreWallRange
     
     // render it
     if (markceiling)
-	ceilingplane = R_CheckPlane (ceilingplane, rw_x, rw_stopx-1);
+    {
+	visplane_t *new_ceilingplane =
+	    R_CheckPlane (ceilingplane, rw_x, rw_stopx-1);
+
+	if (new_ceilingplane != ceilingplane)
+	{
+	    ceilingplane = new_ceilingplane;
+	    R_UpdateSectorPlaneCache(frontsector, NULL, ceilingplane,
+				     false, true);
+	}
+	else
+	{
+	    ceilingplane = new_ceilingplane;
+	}
+    }
     
     if (markfloor)
-	floorplane = R_CheckPlane (floorplane, rw_x, rw_stopx-1);
+    {
+	visplane_t *new_floorplane =
+	    R_CheckPlane (floorplane, rw_x, rw_stopx-1);
+
+	if (new_floorplane != floorplane)
+	{
+	    floorplane = new_floorplane;
+	    R_UpdateSectorPlaneCache(frontsector, floorplane, NULL,
+				     true, false);
+	}
+	else
+	{
+	    floorplane = new_floorplane;
+	}
+    }
 
     if (segtextured)
 	R_RenderSegLoop ();

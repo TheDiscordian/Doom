@@ -36,6 +36,7 @@
 // State.
 #include "doomstat.h"
 #include "r_state.h"
+#include "r_bsp.h"
 #include "z_zone.h"
 
 #include "tables.h"
@@ -51,6 +52,8 @@ side_t*		sidedef;
 line_t*		linedef;
 sector_t*	frontsector;
 sector_t*	backsector;
+rendersegcache_t* rendersegcache;
+rendersegcache_t* cursegcache;
 
 drawseg_t	drawsegs[MAXDRAWSEGS] R_CACHE_ALIGNED;
 drawseg_t*	ds_p;
@@ -80,6 +83,116 @@ typedef struct
 } bsp_render_node_t;
 
 static bsp_render_node_t *bsp_render_nodes;
+
+typedef struct
+{
+    int validcount;
+    visplane_t *floorplane;
+    visplane_t *ceilingplane;
+} sector_plane_cache_t;
+
+static sector_plane_cache_t *sector_plane_cache;
+
+static void R_FillSegRenderData(void)
+{
+    for (int i = 0; i < numsegs; i++)
+    {
+	seg_t *seg = &segs[i];
+	rendersegcache_t *dst = &rendersegcache[i];
+	side_t *side = seg->sidedef;
+	line_t *line = seg->linedef;
+
+	dst->v1 = seg->v1;
+	dst->v2 = seg->v2;
+	dst->frontsector = seg->frontsector;
+	dst->backsector = seg->backsector;
+	dst->sidedef = side;
+	dst->linedef = line;
+	dst->angle = seg->angle;
+	dst->normalangle = seg->angle + ANG90;
+	dst->offset = seg->offset;
+	dst->textureoffset = side->textureoffset;
+	dst->rowoffset = side->rowoffset;
+	dst->toptexture = side->toptexture;
+	dst->bottomtexture = side->bottomtexture;
+	dst->midtexture = side->midtexture;
+	dst->pegflags = line->flags & (ML_DONTPEGTOP | ML_DONTPEGBOTTOM);
+
+	if (seg->v1->y == seg->v2->y)
+	    dst->lightbias = -1;
+	else if (seg->v1->x == seg->v2->x)
+	    dst->lightbias = 1;
+	else
+	    dst->lightbias = 0;
+    }
+}
+
+void R_BuildSegRenderData(void)
+{
+    byte *raw;
+
+    if (numsegs <= 0 || segs == NULL)
+    {
+	rendersegcache = NULL;
+	return;
+    }
+
+    raw = Z_Malloc(numsegs * sizeof(*rendersegcache) + 63,
+		   PU_LEVEL, 0);
+    rendersegcache = (rendersegcache_t *)
+	(((uintptr_t)raw + 63u) & ~(uintptr_t)63u);
+
+    if (numsectors > 0 && sectors != NULL)
+    {
+	raw = Z_Malloc(numsectors * sizeof(*sector_plane_cache) + 63,
+		       PU_LEVEL, 0);
+	sector_plane_cache = (sector_plane_cache_t *)
+	    (((uintptr_t)raw + 63u) & ~(uintptr_t)63u);
+	memset(sector_plane_cache, 0,
+	       numsectors * sizeof(*sector_plane_cache));
+    }
+    else
+    {
+	sector_plane_cache = NULL;
+    }
+
+    R_FillSegRenderData();
+}
+
+void R_UpdateSegRenderData(void)
+{
+    if (rendersegcache == NULL)
+	R_BuildSegRenderData();
+    else
+	R_FillSegRenderData();
+}
+
+void R_UpdateSectorPlaneCache(sector_t *sector,
+			      visplane_t *floor,
+			      visplane_t *ceiling,
+			      boolean update_floor,
+			      boolean update_ceiling)
+{
+    sector_plane_cache_t *plane_cache;
+    int sector_index;
+
+    if (sector_plane_cache == NULL || sector == NULL)
+	return;
+
+    sector_index = sector - sectors;
+    if ((unsigned)sector_index >= (unsigned)numsectors)
+	return;
+
+    plane_cache = &sector_plane_cache[sector_index];
+    if (plane_cache->validcount != validcount)
+	return;
+
+    if (update_floor)
+	plane_cache->floorplane = floor;
+
+    if (update_ceiling)
+	plane_cache->ceilingplane = ceiling;
+}
 
 void R_BuildBSPRenderData(void)
 {
@@ -209,7 +322,7 @@ OF_FASTTEXT static angle_t R_PointToAngleBSP(fixed_t x, fixed_t y)
     return ANG270 - 1 - tantoangle[R_BspSlopeDiv(x, y)];
 }
 
-static fixed_t R_PointToDistBSP(fixed_t x, fixed_t y)
+static fixed_t __attribute__((noinline)) R_PointToDistBSP(fixed_t x, fixed_t y)
 {
     int angle;
     fixed_t dx;
@@ -227,10 +340,10 @@ static fixed_t R_PointToDistBSP(fixed_t x, fixed_t y)
 	dy = temp;
     }
 
-    frac = dx != 0 ? FixedDiv(dy, dx) : 0;
+    frac = dx != 0 ? FixedDivPositive(dy, dx) : 0;
     angle = (tantoangle[frac >> DBITS] + ANG90) >> ANGLETOFINESHIFT;
 
-    return FixedDiv(dx, finesine[angle]);
+    return FixedDivPositive(dx, finesine[angle]);
 }
 
 static angle_t R_VertexViewAngle(vertex_t *vertex)
@@ -523,7 +636,8 @@ OF_FASTTEXT void R_AddLine (seg_t*	line)
     perf_start = R_PERF_DETAIL_BEGIN();
     
     curline = line;
-    backsector = line->backsector;
+    cursegcache = &rendersegcache[line - segs];
+    backsector = cursegcache->backsector;
 
     if (backsector
 	&& backsector->ceilingheight > frontsector->floorheight
@@ -533,14 +647,14 @@ OF_FASTTEXT void R_AddLine (seg_t*	line)
 	&& backsector->ceilingpic == frontsector->ceilingpic
 	&& backsector->floorpic == frontsector->floorpic
 	&& backsector->lightlevel == frontsector->lightlevel
-	&& line->sidedef->midtexture == 0)
+	&& cursegcache->midtexture == 0)
     {
 	goto done;
     }
 
     // OPTIMIZE: quickly reject orthogonal back sides.
-    angle1 = R_VertexViewAngle(line->v1);
-    angle2 = R_VertexViewAngle(line->v2);
+    angle1 = R_VertexViewAngle(cursegcache->v1);
+    angle2 = R_VertexViewAngle(cursegcache->v2);
     
     // Clip to view edges.
     // OPTIMIZE: make constant out of 2*clipangle (FIELDOFVIEW).
@@ -611,7 +725,7 @@ OF_FASTTEXT void R_AddLine (seg_t*	line)
     if (backsector->ceilingpic == frontsector->ceilingpic
 	&& backsector->floorpic == frontsector->floorpic
 	&& backsector->lightlevel == frontsector->lightlevel
-	&& curline->sidedef->midtexture == 0)
+	&& cursegcache->midtexture == 0)
     {
 	goto done;
     }
@@ -635,7 +749,7 @@ OF_FASTTEXT void R_AddLine (seg_t*	line)
 // Returns true
 //  if some part of the bbox might be visible.
 //
-int	checkcoord[12][4] =
+static const unsigned char checkcoord[12][4] =
 {
     {3,0,2,1},
     {3,0,2,0},
@@ -666,6 +780,8 @@ OF_FASTTEXT boolean R_CheckBBox (fixed_t*	bspcoord)
     angle_t		angle2;
     angle_t		span;
     angle_t		tspan;
+    angle_t		doubleclip;
+    const unsigned char* coords;
     
     cliprange_t*	start;
 
@@ -699,10 +815,11 @@ OF_FASTTEXT boolean R_CheckBBox (fixed_t*	bspcoord)
 	goto done;
     }
 	
-    x1 = bspcoord[checkcoord[boxpos][0]];
-    y1 = bspcoord[checkcoord[boxpos][1]];
-    x2 = bspcoord[checkcoord[boxpos][2]];
-    y2 = bspcoord[checkcoord[boxpos][3]];
+    coords = checkcoord[boxpos];
+    x1 = bspcoord[coords[0]];
+    y1 = bspcoord[coords[1]];
+    x2 = bspcoord[coords[2]];
+    y2 = bspcoord[coords[3]];
     
     // check clip list for an open space
     angle1 = R_BBoxPointAngle (x1, y1) - viewangle;
@@ -717,11 +834,12 @@ OF_FASTTEXT boolean R_CheckBBox (fixed_t*	bspcoord)
 	goto done;
     }
     
+    doubleclip = clipangle << 1;
     tspan = angle1 + clipangle;
 
-    if (tspan > 2*clipangle)
+    if (tspan > doubleclip)
     {
-	tspan -= 2*clipangle;
+	tspan -= doubleclip;
 
 	// Totally off the left edge?
 	if (tspan >= span)
@@ -733,9 +851,9 @@ OF_FASTTEXT boolean R_CheckBBox (fixed_t*	bspcoord)
 	angle1 = clipangle;
     }
     tspan = clipangle - angle2;
-    if (tspan > 2*clipangle)
+    if (tspan > doubleclip)
     {
-	tspan -= 2*clipangle;
+	tspan -= doubleclip;
 
 	// Totally off the left edge?
 	if (tspan >= span)
@@ -795,6 +913,8 @@ OF_FASTTEXT void R_Subsector (int num)
     int			count;
     seg_t*		line;
     subsector_t*	sub;
+    sector_plane_cache_t* plane_cache;
+    int                 sector_index;
     unsigned int        perf_start;
 
     perf_start = R_PERF_DETAIL_BEGIN();
@@ -812,24 +932,44 @@ OF_FASTTEXT void R_Subsector (int num)
     count = sub->numlines;
     line = &segs[sub->firstline];
 
-    if (frontsector->floorheight < viewz)
+    sector_index = frontsector - sectors;
+    plane_cache = sector_plane_cache != NULL
+               && (unsigned)sector_index < (unsigned)numsectors
+                ? &sector_plane_cache[sector_index] : NULL;
+
+    if (plane_cache != NULL && plane_cache->validcount == validcount)
     {
-	floorplane = R_FindPlane (frontsector->floorheight,
-				  frontsector->floorpic,
-				  frontsector->lightlevel);
+	floorplane = plane_cache->floorplane;
+	ceilingplane = plane_cache->ceilingplane;
     }
     else
-	floorplane = NULL;
-    
-    if (frontsector->ceilingheight > viewz 
-	|| frontsector->ceilingpic == skyflatnum)
     {
-	ceilingplane = R_FindPlane (frontsector->ceilingheight,
-				    frontsector->ceilingpic,
-				    frontsector->lightlevel);
+	if (frontsector->floorheight < viewz)
+	{
+	    floorplane = R_FindPlane (frontsector->floorheight,
+				      frontsector->floorpic,
+				      frontsector->lightlevel);
+	}
+	else
+	    floorplane = NULL;
+
+	if (frontsector->ceilingheight > viewz
+	    || frontsector->ceilingpic == skyflatnum)
+	{
+	    ceilingplane = R_FindPlane (frontsector->ceilingheight,
+					frontsector->ceilingpic,
+					frontsector->lightlevel);
+	}
+	else
+	    ceilingplane = NULL;
+
+	if (plane_cache != NULL)
+	{
+	    plane_cache->floorplane = floorplane;
+	    plane_cache->ceilingplane = ceilingplane;
+	    plane_cache->validcount = validcount;
+	}
     }
-    else
-	ceilingplane = NULL;
 		
     R_AddSprites (frontsector);	
 
@@ -861,6 +1001,7 @@ typedef struct
 {
     int backchild;
     fixed_t *backbbox;
+    unsigned char contains_view;
 } bsp_stack_t;
 
 OF_FASTTEXT void R_RenderBSPNode (int bspnum)
@@ -872,6 +1013,7 @@ OF_FASTTEXT void R_RenderBSPNode (int bspnum)
     bsp_stack_t	stack[BSP_STACK_MAX];
     int		stack_top = 0;
     int		found_back;
+    int		contains_view = 1;
 
     if (bsp_render_nodes == NULL && numnodes > 0)
 	R_BuildBSPRenderData();
@@ -895,6 +1037,23 @@ OF_FASTTEXT void R_RenderBSPNode (int bspnum)
 	    frontchild = bsp->children[side];
 	    backchild = bsp->children[side^1];
 
+	    // Once traversal moves into a subtree that cannot contain the
+	    // viewpoint, both children can be rejected by the bbox clip test.
+	    if (!contains_view)
+	    {
+		R_PERF_DETAIL_COUNT(R_PERF_DETAIL_BSP_FRONT_BBOX);
+		if (!R_CheckBBox(bsp->bbox[side]))
+		{
+		    R_PERF_DETAIL_COUNT(R_PERF_DETAIL_BSP_FRONT_CULLED);
+		    if (R_CheckBBox(bsp->bbox[side^1]))
+		    {
+			bspnum = backchild;
+			continue;
+		    }
+		    goto pop_back_child;
+		}
+	    }
+
 	    // Render front space first.  The back-child bbox must be checked
 	    // after front space updates solidsegs, so keep the parent pending.
 	    if (stack_top == BSP_STACK_MAX)
@@ -903,6 +1062,7 @@ OF_FASTTEXT void R_RenderBSPNode (int bspnum)
 		if (R_CheckBBox (bsp->bbox[side^1]))
 		{
 		    bspnum = backchild;
+		    contains_view = 0;
 		    continue;
 		}
 		goto pop_back_child;
@@ -910,6 +1070,7 @@ OF_FASTTEXT void R_RenderBSPNode (int bspnum)
 
 	    stack[stack_top].backchild = backchild;
 	    stack[stack_top].backbbox = bsp->bbox[side^1];
+	    stack[stack_top].contains_view = 0;
 	    stack_top++;
 	    bspnum = frontchild;
 	}
@@ -938,6 +1099,7 @@ OF_FASTTEXT void R_RenderBSPNode (int bspnum)
 	    if (R_CheckBBox (entry->backbbox))
 	    {
 		bspnum = entry->backchild;
+		contains_view = entry->contains_view;
 		found_back = 1;
 		break;
 	    }

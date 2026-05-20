@@ -344,6 +344,7 @@ short*		mceilingclip;
 
 fixed_t		spryscale;
 fixed_t		sprtopscreen;
+int		maskedcolormaprow = -1;
 
 void R_DrawMaskedColumn (column_t* column)
 {
@@ -376,7 +377,16 @@ void R_DrawMaskedColumn (column_t* column)
 
 	    // Drawn by either R_DrawColumn
 	    //  or (SHADOW) R_DrawFuzzColumn.
-	    colfunc ();	
+	    if (maskedcolormaprow < 0
+		|| detailshift != 0
+		|| colfunc != basecolfunc
+		|| !R_GPU_DrawColumnLightDirect(dc_x, dc_yl, dc_yh,
+						 dc_source, dc_texturemid,
+						 dc_iscale,
+						 maskedcolormaprow))
+	    {
+		colfunc ();
+	    }
 	}
 	column = (column_t *)(  (byte *)column + column->length + 4);
     }
@@ -428,6 +438,10 @@ R_DrawVisSprite
     frac = vis->startfrac;
     spryscale = vis->scale;
     sprtopscreen = centeryfrac - FixedMul(dc_texturemid,spryscale);
+    maskedcolormaprow = -1;
+
+    if (detailshift == 0 && colfunc == basecolfunc)
+	maskedcolormaprow = R_GPU_ColormapRow((const byte *)dc_colormap);
 
     if (!dc_colormap && R_GPU_CanDrawFuzz())
 	fuzz_gpu_batch = R_GPU_BeginFuzzSpans();
@@ -445,6 +459,7 @@ R_DrawVisSprite
     if (fuzz_gpu_batch)
 	R_GPU_EndFuzzSpans();
 
+    maskedcolormaprow = -1;
     colfunc = basecolfunc;
 }
 
@@ -532,7 +547,7 @@ void R_ProjectSprite (mobj_t* thing)
     if (tz < MINZ)
 	return;
     
-    xscale = FixedDiv(projection, tz);
+    xscale = FixedDivPositive(projection, tz);
 	
     gxt = -FixedMul(tr_x,viewsin); 
     gyt = FixedMul(tr_y,viewcos); 
@@ -597,7 +612,7 @@ void R_ProjectSprite (mobj_t* thing)
     vis->texturemid = vis->gzt - viewz;
     vis->x1 = x1 < 0 ? 0 : x1;
     vis->x2 = x2 >= viewwidth ? viewwidth-1 : x2;	
-    iscale = FixedDiv (FRACUNIT, xscale);
+    iscale = FixedDivPositive(FRACUNIT, xscale);
 
     if (flip)
     {

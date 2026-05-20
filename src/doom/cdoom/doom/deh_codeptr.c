@@ -174,13 +174,39 @@ static const action_entry_t action_table[] = {
 };
 #undef A
 
-static void (*FindAction(const char *name))()
+static boolean FindAction(const char *name, void (**func)())
 {
+    if (!strcasecmp(name, "NULL")
+     || !strcasecmp(name, "A_NULL")
+     || !strcasecmp(name, "0"))
+    {
+        *func = NULL;
+        return true;
+    }
+
+    /* Some BEX patches use the old Doom beta action name. We do not have
+     * the beta projectile behavior, so bind it to Doom's shipped BFG fire
+     * action rather than leaving the frame without a code pointer. */
+    if (!strcasecmp(name, "FireOldBFG")
+     || !strcasecmp(name, "A_FireOldBFG"))
+    {
+        *func = (void (*)()) A_FireBFG;
+        return true;
+    }
+
     for (const action_entry_t *e = action_table; e->name; ++e)
     {
-        if (!strcasecmp(e->name, name)) return e->func;
+        if (!strcasecmp(e->name, name)
+         || (e->name[0] == 'A'
+          && e->name[1] == '_'
+          && !strcasecmp(e->name + 2, name)))
+        {
+            *func = e->func;
+            return true;
+        }
     }
-    return NULL;
+
+    return false;
 }
 
 /* [CODEPTR] sections have no per-section state - every line is a
@@ -214,8 +240,8 @@ static void DEH_CodeptrParseLine(deh_context_t *context, char *line, void *tag)
         return;
     }
 
-    void (*func)() = FindAction(action_name);
-    if (!func)
+    void (*func)();
+    if (!FindAction(action_name, &func))
     {
         DEH_Warning(context, "[CODEPTR] unknown action '%s'", action_name);
         return;

@@ -179,6 +179,7 @@ int main(int argc, char **argv)
     {
         "doom.wad",
         "doom1.wad",
+        "doomu.wad",
         "doom/DOOM.WAD",
         "doom2/DOOM2.WAD",
         "plutonia/PLUTONIA.WAD",
@@ -191,16 +192,24 @@ int main(int argc, char **argv)
     };
     static const char *const pwad_candidates[] =
     {
+        "SIGIL_COMPAT_V1_23.wad",
+        "SIGIL_COMPAT_V1_21.wad",
+        "SIGIL_COMPAT_V1_2.wad",
+        "SIGIL_II_V1_0.WAD",
         "sigil/SIGIL_COMPAT_V1_23.wad",
         "sigil/SIGIL_COMPAT_V1_21.wad",
         "sigil/SIGIL_COMPAT_V1_2.wad",
+        "sigil2/SIGIL_II_V1_0.WAD",
         "sigil/SIGIL_COMPAT_v1_23.wad",
         "sigil/SIGIL_COMPAT_v1_21.wad",
         "sigil/SIGIL_COMPAT_v1_2.wad",
         "sigil/SIGIL_COMPAT.wad",
         "sigil/sigil_compat.wad",
+        "EARTH.WAD",
         "earth/EARTH.WAD",
+        "TVR!.WAD",
         "revolution/TVR!.WAD",
+        "TNT31.WAD",
         "tnt/TNT31.WAD",
     };
     const char *iwad_file = FindReadableFile(iwad_candidates,
