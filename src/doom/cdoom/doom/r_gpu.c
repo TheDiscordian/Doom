@@ -69,6 +69,11 @@ boolean R_GPU_DrawFuzzColumnDirect(int x, int yl, int yh)
     (void)yh;
     return false;
 }
+int R_GPU_ColormapRow(const byte *map)
+{
+    (void)map;
+    return -1;
+}
 boolean R_GPU_DrawColumnLightDirect(int x, int yl, int yh, const byte *source,
                                     int texturemid, int iscale, int light)
 {
@@ -185,6 +190,7 @@ static uintptr_t gpu_framebuffer_delta;
 
 #define GPU_DEFERRED_LUMPS 64
 #define GPU_COLUMN_BATCH_LANES 8
+#define GPU_SPAN_BATCH_SPANS 96
 #define GPU_LETTERBOX_Y ((OF_SCREEN_H - SCREENHEIGHT) / 2)
 #define GPU_FB_CACHE_LINE_BYTES 64u
 #define GPU_FB_CACHE_LINES \
@@ -199,6 +205,8 @@ static of_gpu_span_group_varcount_t gpu_column_var_batch;
 static int gpu_column_var_batch_count;
 static int gpu_column_var_batch_base_x;
 static int gpu_column_var_batch_base_y;
+static of_gpu_span_t gpu_span_batch[GPU_SPAN_BATCH_SPANS];
+static int gpu_span_batch_count;
 static uint32_t gpu_cpu_dirty_lines[GPU_FB_CACHE_WORDS];
 static uint32_t gpu_cpu_valid_lines[GPU_FB_CACHE_WORDS];
 static uint8_t gpu_fuzz_source_tex[4] = { 0x80, 0x80, 0x80, 0x80 };
@@ -207,12 +215,16 @@ static uint8_t gpu_fuzz_transluc_table[256 * 256];
 static void gpu_flush_column_batch(void);
 static void gpu_flush_column_var_batch(void);
 static void gpu_flush_column_batches(void);
+static void gpu_flush_span_batch(void);
+static void gpu_flush_draw_batches(void);
 static void gpu_release_deferred_lumps(void);
 static uint32_t gpu_framebuffer_addr(pixel_t *ptr);
 
-static int gpu_has_pending_column_batches(void)
+static int gpu_has_pending_draw_batches(void)
 {
-    return gpu_column_batch_count != 0 || gpu_column_var_batch_count != 0;
+    return gpu_column_batch_count != 0
+        || gpu_column_var_batch_count != 0
+        || gpu_span_batch_count != 0;
 }
 
 static void gpu_line_set(uint32_t *bits, unsigned int line)
@@ -452,7 +464,7 @@ static int gpu_prepare_framebuffer_for_cpu(void)
 {
     unsigned int wait_start;
 
-    gpu_flush_column_batches();
+    gpu_flush_draw_batches();
 
     if (gpu_framebuffer_cpu_ready && !gpu_pending)
         return 0;
@@ -671,6 +683,27 @@ static void gpu_flush_column_batches(void)
     gpu_flush_column_var_batch();
 }
 
+static void gpu_flush_span_batch(void)
+{
+    int count = gpu_span_batch_count;
+
+    if (count <= 0)
+        return;
+
+    for (int i = 0; i < count; i++)
+        of_gpu_draw_span(&gpu_span_batch[i]);
+
+    gpu_span_batch_count = 0;
+    gpu_pending = 1;
+    gpu_mark_framebuffer_gpu_dirty();
+}
+
+static void gpu_flush_draw_batches(void)
+{
+    gpu_flush_column_batches();
+    gpu_flush_span_batch();
+}
+
 static int gpu_can_batch_column(uint32_t fb_addr, uint16_t count,
                                 uint8_t flags, uint8_t colormap_id,
                                 int16_t fb_stride, int16_t lane_delta,
@@ -790,7 +823,7 @@ static void gpu_finish_pending(void)
     unsigned int wait_start;
     int waited_for_pending_acquire;
 
-    gpu_flush_column_batches();
+    gpu_flush_draw_batches();
 
     if (!gpu_pending)
         return;
@@ -917,6 +950,7 @@ void R_GPU_Init(void)
     gpu_deferred_lump_count = 0;
     gpu_column_batch_count = 0;
     gpu_column_var_batch_count = 0;
+    gpu_span_batch_count = 0;
     gpu_reset_cpu_cache_tracking();
 
     if (!r_gpu_enabled || M_CheckParm("-nogpu") > 0)
@@ -984,6 +1018,7 @@ void R_GPU_Shutdown(void)
     gpu_framebuffer_delta = 0;
     gpu_column_batch_count = 0;
     gpu_column_var_batch_count = 0;
+    gpu_span_batch_count = 0;
     gpu_reset_cpu_cache_tracking();
     gpu_present = 0;
 }
@@ -1123,7 +1158,7 @@ void R_GPU_PrepareForCPUAccessRect(int x, int y, int w, int h)
     }
 
     if (gpu_cpu_dirty && gpu_framebuffer_cpu_ready &&
-        !gpu_pending && !gpu_has_pending_column_batches())
+        !gpu_pending && !gpu_has_pending_draw_batches())
     {
         if (gpu_flip_enabled)
         {
@@ -1187,7 +1222,7 @@ boolean R_GPU_PresentFrame(void)
      * acquire a safe draw buffer after this flip's fence retires, which gives
      * game/audio work room to run while the swap is pending.
      */
-    gpu_flush_column_batches();
+    gpu_flush_draw_batches();
     had_gpu_work = gpu_pending;
     gpu_flush_cpu_dirty_lines();
 
@@ -1246,7 +1281,7 @@ boolean R_GPU_BeginFuzzSpans(void)
         return false;
 
     gpu_prepare_for_gpu_write();
-    gpu_flush_column_batches();
+    gpu_flush_draw_batches();
     gpu_fuzz_batch_active = 1;
     return true;
 }
@@ -1275,6 +1310,7 @@ boolean R_GPU_DrawFuzzColumnDirect(int x, int yl, int yh)
 
     if (!gpu_fuzz_batch_active)
         gpu_prepare_for_gpu_write();
+    gpu_flush_span_batch();
 
     gpu_add_varcount_column(x, yl, count, gpu_fuzz_source_tex, 0, 0, 0,
                             OF_GPU_SPAN_TRANSLUC, 0, SCREENWIDTH, 1,
@@ -1300,6 +1336,7 @@ boolean R_GPU_DrawColumnLightDirect(int x, int yl, int yh, const byte *source,
         return false;
 
     gpu_prepare_for_gpu_write();
+    gpu_flush_span_batch();
     gpu_add_varcount_column(x, yl, count, source,
                             gpu_column_t_start_direct(yl, texturemid, iscale),
                             iscale, (uint8_t)light, OF_GPU_SPAN_COLORMAP,
@@ -1335,6 +1372,7 @@ boolean R_GPU_DrawColumnLightBatchDirect(int x, int yl, int yh, int lanes,
     }
 
     gpu_prepare_for_gpu_write();
+    gpu_flush_span_batch();
     gpu_flush_column_var_batch();
 
     fb_addr = gpu_framebuffer_addr(ylookup[yl] + columnofs[x]);
@@ -1418,6 +1456,7 @@ boolean R_GPU_DrawColumnLightVarBatchDirect(int x, int lanes,
                                                 source, t, tstep, light);
 
     gpu_prepare_for_gpu_write();
+    gpu_flush_span_batch();
 
     for (int i = 0; i < lanes; i++)
     {
@@ -1462,23 +1501,31 @@ boolean R_GPU_DrawSpanLightDirect(int y, int x1, int x2, const byte *source,
     if (light < 0 || light > 63)
         return false;
 
-    gpu_prepare_for_gpu_write();
-    gpu_flush_column_batch();
+    if (gpu_span_batch_count == 0)
+    {
+        gpu_prepare_for_gpu_write();
+        gpu_flush_column_batches();
+    }
 
-    _gpu_cmd_header(GPU_CMD_DRAW_SPAN_GROUP, 9);
-    _gpu_ring_write(gpu_framebuffer_addr(ylookup[y] + columnofs[x1]));
-    _gpu_ring_write((uint32_t)(uintptr_t)source);
-    _gpu_ring_write((uint32_t)xfrac);
-    _gpu_ring_write((uint32_t)yfrac);
-    _gpu_ring_write((uint32_t)xstep);
-    _gpu_ring_write((uint32_t)ystep);
-    _gpu_ring_write((((uint32_t)count & 0x0FFFu) << 16) |
-                    (((uint32_t)light & 0x3Fu) << 8) |
-                    OF_GPU_SPAN_COLORMAP);
-    _gpu_ring_write((1u << 16) | 64u);
-    _gpu_ring_write((63u << 16) | 63u);
-    gpu_pending = 1;
-    gpu_mark_framebuffer_gpu_dirty();
+    of_gpu_span_t *span = &gpu_span_batch[gpu_span_batch_count++];
+    span->fb_addr = gpu_framebuffer_addr(ylookup[y] + columnofs[x1]);
+    span->tex_addr = (uint32_t)(uintptr_t)source;
+    span->s = xfrac;
+    span->t = yfrac;
+    span->sstep = xstep;
+    span->tstep = ystep;
+    span->count = (uint16_t)count;
+    span->light = (uint8_t)light;
+    span->flags = OF_GPU_SPAN_COLORMAP;
+    span->colormap_id = 0;
+    span->fb_stride = 1;
+    span->tex_width = 64;
+    span->tex_w_mask = 63;
+    span->tex_h_mask = 63;
+
+    if (gpu_span_batch_count == GPU_SPAN_BATCH_SPANS)
+        gpu_flush_span_batch();
+
     R_Perf_CountGpuSpan((unsigned int)count);
     return true;
 }
@@ -1486,7 +1533,7 @@ boolean R_GPU_DrawSpanLightDirect(int y, int x1, int x2, const byte *source,
 boolean R_GPU_DeferLumpRelease(int lumpnum)
 {
     if (!gpu_present || !gpu_frame_active ||
-        (!gpu_pending && !gpu_has_pending_column_batches()))
+        (!gpu_pending && !gpu_has_pending_draw_batches()))
         return false;
 
     for (int i = 0; i < gpu_deferred_lump_count; i++)

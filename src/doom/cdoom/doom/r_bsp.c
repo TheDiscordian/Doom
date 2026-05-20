@@ -434,9 +434,83 @@ typedef	struct
 cliprange_t*	newend;
 cliprange_t	solidsegs[MAXSEGS] R_CACHE_ALIGNED;
 
+#define SOLID_COVER_WORDS ((SCREENWIDTH + 31) / 32)
+
+// Exact screen-column coverage for solid wall segments.  The solidsegs
+// list still owns wall clipping; this is only a faster bbox coverage test.
+static uint32_t solidcovered[SOLID_COVER_WORDS] R_CACHE_ALIGNED;
+
 static int R_SolidSegsFull(void)
 {
     return solidsegs[0].last >= viewwidth;
+}
+
+static inline void R_MarkSolidColumns(int first, int last)
+{
+    int firstword;
+    int lastword;
+    uint32_t firstmask;
+    uint32_t lastmask;
+
+    if (first < 0)
+	first = 0;
+    if (last >= viewwidth)
+	last = viewwidth - 1;
+    if (first > last)
+	return;
+
+    firstword = first >> 5;
+    lastword = last >> 5;
+    firstmask = 0xffffffffu << (first & 31);
+    lastmask = 0xffffffffu >> (31 - (last & 31));
+
+    if (firstword == lastword)
+    {
+	solidcovered[firstword] |= firstmask & lastmask;
+	return;
+    }
+
+    solidcovered[firstword] |= firstmask;
+    for (int word = firstword + 1; word < lastword; word++)
+	solidcovered[word] = 0xffffffffu;
+    solidcovered[lastword] |= lastmask;
+}
+
+static inline boolean R_SolidColumnsCovered(int first, int last)
+{
+    int firstword;
+    int lastword;
+    uint32_t firstmask;
+    uint32_t lastmask;
+
+    if (first < 0)
+	first = 0;
+    if (last >= viewwidth)
+	last = viewwidth - 1;
+    if (first > last)
+	return false;
+
+    firstword = first >> 5;
+    lastword = last >> 5;
+    firstmask = 0xffffffffu << (first & 31);
+    lastmask = 0xffffffffu >> (31 - (last & 31));
+
+    if (firstword == lastword)
+    {
+	uint32_t mask = firstmask & lastmask;
+	return (solidcovered[firstword] & mask) == mask;
+    }
+
+    if ((solidcovered[firstword] & firstmask) != firstmask)
+	return false;
+
+    for (int word = firstword + 1; word < lastword; word++)
+    {
+	if (solidcovered[word] != 0xffffffffu)
+	    return false;
+    }
+
+    return (solidcovered[lastword] & lastmask) == lastmask;
 }
 
 static cliprange_t *R_FindClipRange(int last)
@@ -473,6 +547,8 @@ R_ClipSolidWallSegment
 {
     cliprange_t*	next;
     cliprange_t*	start;
+
+    R_MarkSolidColumns(first, last);
 
     // Find the first range that touches the range
     //  (adjacent pixels are touching).
@@ -616,6 +692,7 @@ void R_ClearClipSegs (void)
     solidsegs[1].first = viewwidth;
     solidsegs[1].last = 0x7fffffff;
     newend = solidsegs+2;
+    memset(solidcovered, 0, sizeof(solidcovered));
 }
 
 //
@@ -882,7 +959,14 @@ OF_FASTTEXT boolean R_CheckBBox (fixed_t*	bspcoord)
 	goto done;
     }
     sx2--;
+
+    if (sx1 <= sx2)
+    {
+	result = !R_SolidColumnsCovered(sx1, sx2);
+	goto done;
+    }
 	
+    // Wrapped/reversed bbox spans keep the original clip-list path.
     start = R_FindClipRange(sx2);
     
     if (sx1 >= start->first

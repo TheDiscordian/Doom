@@ -166,7 +166,7 @@ static uint32_t _gpu_base;
 #define GPU_RING_WRPTR          OF_GPU_REG(0x04)  /* R: published write pointer */
 #define GPU_DMA_SRC             OF_GPU_REG(0x0C)  /* W: SDRAM byte address of command buffer to pull */
 #define GPU_RING_RDPTR          OF_GPU_REG(0x10)  /* R: GPU read pointer */
-#define GPU_STATUS              OF_GPU_REG(0x14)  /* R: bit3=transluc busy, bit2=DMA busy, bit1=ring empty, bit0=busy */
+#define GPU_STATUS              OF_GPU_REG(0x14)  /* R: bit6=DMA desc full, bit3=transluc busy, bit2=DMA busy, bit1=ring empty, bit0=busy */
 #define GPU_FENCE_REACHED       OF_GPU_REG(0x18)  /* R: last completed fence token */
 #define GPU_DMA_LEN             OF_GPU_REG(0x1C)  /* W: word count to pull (≤4096) */
 #define GPU_TRANSLUC_ADDR       OF_GPU_REG(0x20)  /* W: byte addr into transluc[] (auto-inc by 4) */
@@ -179,6 +179,7 @@ static uint32_t _gpu_base;
 #define GPU_STATUS_RING_EMPTY  0x2u
 #define GPU_STATUS_DMA_BUSY    0x4u  /* SDRAM command/payload DMA busy */
 #define GPU_STATUS_TRANSLUC_BUSY 0x8u /* SRAM translucency LUT upload/lookup busy */
+#define GPU_STATUS_DMA_DESC_FULL 0x40u /* command DMA descriptor FIFO full */
 
 /* ================================================================
  * Command IDs
@@ -252,11 +253,16 @@ static uint32_t _gpu_base;
 /* Doorbell-DMA scratch region — must live in SDRAM because gpu_core's
  * m_rd_* AXI master only reaches the SDRAM arbiter (see core_top.v's
  * sdram_arb instantiation: GPU is m0, no other targets are wired).
- * CPU writes this window through the cached alias for speed.  Before each
- * GPU DMA kick, of_gpu drains the flushed cache lines with same-master
- * readbacks so the GPU cannot read stale command words. */
+ * CPU writes this window through the cached alias for speed.  The RTL DMA
+ * puller has a two-entry descriptor FIFO, so the SDK alternates between
+ * two scratch buffers and can build one command stream while the prior
+ * stream is still being copied into ring BRAM.  Before each GPU DMA kick,
+ * of_gpu drains the flushed cache lines with same-master readbacks so the
+ * GPU cannot read stale command words. */
 #define OF_GPU_BATCH_BUF_AXI_OFFSET  0x00140000u
-#define OF_GPU_BATCH_BUF_BYTES       0x00004000u  /* 16 KB reserved */
+#define OF_GPU_BATCH_BUFFER_COUNT    2u
+#define OF_GPU_BATCH_BUFFER_BYTES    0x00004000u  /* 16 KB per buffer */
+#define OF_GPU_BATCH_BUF_BYTES       (OF_GPU_BATCH_BUFFER_COUNT * OF_GPU_BATCH_BUFFER_BYTES)
 #define OF_GPU_CACHE_LINE_BYTES      64u
 
 /* ================================================================
@@ -269,7 +275,10 @@ static uint32_t _gpu_wrptr;
 static uint32_t _gpu_known_rdptr;
 static uint32_t _gpu_fence_next;
 static uint32_t _gpu_cmd_words;
+static uint32_t _gpu_batch_dma_base;
 static uint32_t _gpu_batch_dma_addr;
+static uint32_t _gpu_batch_index;
+static uint32_t _gpu_batch_inflight_mask;
 
 static const uint32_t _gpu_ring_mask = OF_GPU_RING_SIZE - 1;
 
@@ -278,6 +287,7 @@ static const uint32_t _gpu_ring_mask = OF_GPU_RING_SIZE - 1;
  * every store.  NULL on targets that don't expose SDRAM; command
  * submission traps on those targets because the legacy MMIO command path
  * is retired. */
+static uint32_t *_gpu_batch_buf_base;
 static uint32_t *_gpu_batch_buf;
 static uint32_t  _gpu_dbg_dma_waits;
 static uint32_t  _gpu_dbg_dma_spin_iters;
@@ -303,15 +313,38 @@ static uint32_t _gpu_state_tex_dims;
 #error "OF_GPU_COMMAND_STREAM_BATCH_WORDS too small for scalar span batch"
 #endif
 
-#if (OF_GPU_COMMAND_STREAM_BATCH_WORDS * 4u) > OF_GPU_BATCH_BUF_BYTES
-#error "GPU command stream buffer must fit in the reserved SDRAM scratch"
+#if (OF_GPU_COMMAND_STREAM_BATCH_WORDS * 4u) > OF_GPU_BATCH_BUFFER_BYTES
+#error "GPU command stream buffer must fit in one reserved SDRAM scratch buffer"
+#endif
+
+#if OF_GPU_BATCH_BUFFER_COUNT != 2u
+#error "GPU command staging assumes two scratch buffers"
 #endif
 
 /* ---- Internal helpers ---- */
 
+static inline void _gpu_select_batch_buffer(uint32_t index) {
+    _gpu_batch_index = index & 1u;
+    _gpu_batch_dma_addr = _gpu_batch_dma_base +
+        (_gpu_batch_index * OF_GPU_BATCH_BUFFER_BYTES);
+    _gpu_batch_buf = _gpu_batch_buf_base +
+        (_gpu_batch_index * (OF_GPU_BATCH_BUFFER_BYTES / sizeof(uint32_t)));
+}
+
 static inline void _gpu_wait_dma_idle_debug(void) {
     uint32_t dma_spins = 0;
     while (GPU_STATUS & GPU_STATUS_DMA_BUSY)
+        dma_spins++;
+    _gpu_batch_inflight_mask = 0;
+    if (dma_spins) {
+        _gpu_dbg_dma_waits++;
+        _gpu_dbg_dma_spin_iters += dma_spins;
+    }
+}
+
+static inline void _gpu_wait_dma_desc_slot_debug(void) {
+    uint32_t dma_spins = 0;
+    while (GPU_STATUS & GPU_STATUS_DMA_DESC_FULL)
         dma_spins++;
     if (dma_spins) {
         _gpu_dbg_dma_waits++;
@@ -379,19 +412,28 @@ static inline void _gpu_flush_cmd_stream(void) {
     if (_gpu_batch_buf == NULL)
         __builtin_trap();
 
-    _gpu_wait_dma_idle_debug();
+    uint32_t submit_words = _gpu_cmd_words;
+    uint32_t submit_index = _gpu_batch_index;
 
-    _gpu_flush_cmd_cache_range(_gpu_batch_buf, _gpu_cmd_words * 4u);
-    _gpu_drain_cmd_writeback(_gpu_cmd_words * 4u);
+    _gpu_flush_cmd_cache_range(_gpu_batch_buf, submit_words * 4u);
+    _gpu_drain_cmd_writeback(submit_words * 4u);
+    _gpu_wait_dma_desc_slot_debug();
 
     /* The writeback drain above is the data-visibility barrier.  The GPU MMIO
      * doorbell registers sit on a single in-order peripheral path, so extra
      * CPU fences between these volatile writes only add submit latency. */
     GPU_DMA_SRC  = _gpu_batch_dma_addr;
-    GPU_DMA_LEN  = _gpu_cmd_words;
+    GPU_DMA_LEN  = submit_words;
     GPU_DMA_KICK = 1;
     __asm__ volatile("" ::: "memory");
+
+    _gpu_batch_inflight_mask |= (1u << submit_index);
     _gpu_cmd_words = 0;
+
+    uint32_t next_index = submit_index ^ 1u;
+    if (_gpu_batch_inflight_mask & (1u << next_index))
+        _gpu_wait_dma_idle_debug();
+    _gpu_select_batch_buffer(next_index);
 }
 
 static inline void _gpu_ring_ensure(uint32_t bytes) {
@@ -463,7 +505,12 @@ static inline void of_gpu_init(void) {
     _gpu_known_rdptr = 0;
     _gpu_fence_next = 1;
     _gpu_cmd_words = 0;
+    _gpu_batch_dma_base = 0;
     _gpu_batch_dma_addr = 0;
+    _gpu_batch_index = 0;
+    _gpu_batch_inflight_mask = 0;
+    _gpu_batch_buf_base = NULL;
+    _gpu_batch_buf = NULL;
     _gpu_dbg_dma_waits = 0;
     _gpu_dbg_dma_spin_iters = 0;
     _gpu_dbg_ring_waits = 0;
@@ -481,11 +528,10 @@ static inline void of_gpu_init(void) {
     {
         const struct of_capabilities *caps = of_get_caps();
         if (caps && caps->sdram_base != 0) {
-            _gpu_batch_dma_addr = caps->sdram_base + OF_GPU_BATCH_BUF_AXI_OFFSET;
-            _gpu_batch_buf = (uint32_t *)(uintptr_t)
+            _gpu_batch_dma_base = caps->sdram_base + OF_GPU_BATCH_BUF_AXI_OFFSET;
+            _gpu_batch_buf_base = (uint32_t *)(uintptr_t)
                 (caps->sdram_base + OF_GPU_BATCH_BUF_AXI_OFFSET);
-        } else {
-            _gpu_batch_buf = NULL;   /* command submission will trap */
+            _gpu_select_batch_buffer(0);
         }
     }
 }
@@ -617,7 +663,7 @@ static inline void of_gpu_wait(uint32_t token) {
      * silently froze the machine with no diagnostic.  Timeout triggers
      * an illegal-instruction trap so fatal_trap dumps the GPU state;
      * the registers to inspect on the trap side are:
-     *   GPU_STATUS    (0x14) — busy + ring_empty
+     *   GPU_STATUS    (0x14) — busy, ring_empty, DMA state/queue
      *   GPU_RING_RDPTR (0x10) — where the GPU last stopped fetching
      *
      * Uses a plain iteration counter rather than a cycle CSR: this
