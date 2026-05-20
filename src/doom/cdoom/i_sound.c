@@ -165,20 +165,14 @@ static void InitMusicModule(void)
 
     music_module = NULL;
 
-    printf("MUSIC: InitMusicModule snd_musicdevice=%d\n", snd_musicdevice);
-
     for (i=0; music_modules[i] != NULL; ++i)
     {
-        int match = SndDeviceInList(snd_musicdevice,
-                                    music_modules[i]->sound_devices,
-                                    music_modules[i]->num_sound_devices);
-        printf("MUSIC: module[%d]=%p devs=%d match=%d\n",
-               i, (void*)music_modules[i],
-               music_modules[i]->num_sound_devices, match);
         // Is the music device in the list of devices supported
         // by this module?
 
-        if (match)
+        if (SndDeviceInList(snd_musicdevice,
+                            music_modules[i]->sound_devices,
+                            music_modules[i]->num_sound_devices))
         {
         #ifdef _WIN32
             // Skip the native Windows MIDI module if using Timidity.
@@ -192,16 +186,13 @@ static void InitMusicModule(void)
 
             // Initialize the module
 
-            int ok = music_modules[i]->Init();
-            printf("MUSIC: module[%d] Init returned %d\n", i, ok);
-            if (ok)
+            if (music_modules[i]->Init())
             {
                 music_module = music_modules[i];
                 return;
             }
         }
     }
-    printf("MUSIC: no module selected (silent)\n");
 }
 
 //
@@ -244,9 +235,6 @@ void I_InitSound(GameMission_t mission)
     //
 
     nomusicpacks = M_ParmExists("-nomusicpacks");
-
-    printf("AUDIO: I_InitSound nosound=%d nosfx=%d nomusic=%d ss=%d\n",
-           nosound, nosfx, nomusic, screensaver_mode);
 
     // Auto configure the music pack directory.
     M_SetMusicPackDir();
@@ -550,4 +538,3 @@ void I_BindSoundVariables(void)
     M_BindIntVariable("use_libsamplerate",       &use_libsamplerate);
     M_BindFloatVariable("libsamplerate_scale",   &libsamplerate_scale);
 }
-

@@ -74,6 +74,14 @@ static void V_PrepareFramebufferWrite(void)
     }
 }
 
+static void V_PrepareFramebufferWriteRect(int x, int y, int width, int height)
+{
+    if (dest_screen == I_VideoBuffer)
+    {
+        R_GPU_PrepareForCPUAccessRect(x, y, width, height);
+    }
+}
+
 //
 // V_MarkRect 
 // 
@@ -84,7 +92,7 @@ void V_MarkRect(int x, int y, int width, int height)
 
     if (dest_screen == I_VideoBuffer)
     {
-        V_PrepareFramebufferWrite();
+        V_PrepareFramebufferWriteRect(x, y, width, height);
         M_AddToBox (dirtybox, x, y); 
         M_AddToBox (dirtybox, x + width-1, y + height-1); 
     }
@@ -143,6 +151,90 @@ void V_SetPatchClipCallback(vpatchclipfunc_t func)
     patchclip_callback = func;
 }
 
+static void V_DrawPatchClippedAdjusted(int x, int y, patch_t *patch,
+                                       boolean flipped)
+{
+    int width;
+    int height;
+    int clip_left;
+    int clip_right;
+    int clip_top;
+    int clip_bottom;
+    int col;
+
+    width = SHORT(patch->width);
+    height = SHORT(patch->height);
+
+    clip_left = x < 0 ? -x : 0;
+    clip_right = x + width > SCREENWIDTH ? SCREENWIDTH - x : width;
+    clip_top = y < 0 ? -y : 0;
+    clip_bottom = y + height > SCREENHEIGHT ? SCREENHEIGHT - y : height;
+
+    if (clip_left >= clip_right || clip_top >= clip_bottom)
+    {
+        return;
+    }
+
+    V_MarkRect(x + clip_left, y + clip_top,
+               clip_right - clip_left, clip_bottom - clip_top);
+
+    for (col = clip_left; col < clip_right; ++col)
+    {
+        int src_col;
+        int dest_x;
+        column_t *column;
+
+        src_col = flipped ? width - 1 - col : col;
+        dest_x = x + col;
+        column = (column_t *)((byte *)patch + LONG(patch->columnofs[src_col]));
+
+        while (column->topdelta != 0xff)
+        {
+            int post_y;
+            int post_count;
+            int skip;
+            byte *source;
+            pixel_t *dest;
+
+            post_y = y + column->topdelta;
+            post_count = column->length;
+            source = (byte *)column + 3;
+
+            if (post_y + post_count <= y + clip_top
+             || post_y >= y + clip_bottom)
+            {
+                column = (column_t *)((byte *)column + column->length + 4);
+                continue;
+            }
+
+            if (post_y < y + clip_top)
+            {
+                skip = y + clip_top - post_y;
+                source += skip;
+                post_count -= skip;
+                post_y += skip;
+            }
+
+            if (post_y + post_count > y + clip_bottom)
+            {
+                post_count = y + clip_bottom - post_y;
+            }
+
+            if (post_count > 0)
+            {
+                dest = dest_screen + post_y * SCREENWIDTH + dest_x;
+                while (post_count--)
+                {
+                    *dest = *source++;
+                    dest += SCREENWIDTH;
+                }
+            }
+
+            column = (column_t *)((byte *)column + column->length + 4);
+        }
+    }
+}
+
 //
 // V_DrawPatch
 // Masks a column based masked pic to the screen. 
@@ -168,19 +260,19 @@ void V_DrawPatch(int x, int y, patch_t *patch)
             return;
     }
 
-#ifdef RANGECHECK
+    /* DEHEXTRA/widescreen-asset support: many modern PWADs ship HUD/STBAR
+     * patches wider than 320 px (designed for Crispy/DSDA widescreen HUDs).
+     * Always route oversized patches through the clipping path instead of
+     * writing OOB or erroring. RANGECHECK gating made this a debug-only
+     * safety net but we need it unconditionally here. */
     if (x < 0
      || x + SHORT(patch->width) > SCREENWIDTH
      || y < 0
      || y + SHORT(patch->height) > SCREENHEIGHT)
     {
-        printf("Bad V_DrawPatch: patch=%p x=%d y=%d w=%d h=%d (screen %dx%d)\n",
-               (void*)patch, x, y,
-               (int)SHORT(patch->width), (int)SHORT(patch->height),
-               SCREENWIDTH, SCREENHEIGHT);
-        I_Error("Bad V_DrawPatch");
+        V_DrawPatchClippedAdjusted(x, y, patch, false);
+        return;
     }
-#endif
 
     V_MarkRect(x, y, SHORT(patch->width), SHORT(patch->height));
 
@@ -236,15 +328,15 @@ void V_DrawPatchFlipped(int x, int y, patch_t *patch)
             return;
     }
 
-#ifdef RANGECHECK 
+    /* Same widescreen-asset tolerance as V_DrawPatch: clip silently. */
     if (x < 0
      || x + SHORT(patch->width) > SCREENWIDTH
      || y < 0
      || y + SHORT(patch->height) > SCREENHEIGHT)
     {
-        I_Error("Bad V_DrawPatchFlipped");
+        V_DrawPatchClippedAdjusted(x, y, patch, true);
+        return;
     }
-#endif
 
     V_MarkRect (x, y, SHORT(patch->width), SHORT(patch->height));
 
@@ -303,12 +395,15 @@ void V_DrawTLPatch(int x, int y, patch_t * patch)
     y -= SHORT(patch->topoffset);
     x -= SHORT(patch->leftoffset);
 
+    /* Silently skip oversized patches (widescreen assets from PWADs).
+     * No clipped TLPatch implementation: translucency on a partial
+     * patch is rare and not worth the LOC for the few mods that use it. */
     if (x < 0
-     || x + SHORT(patch->width) > SCREENWIDTH 
+     || x + SHORT(patch->width) > SCREENWIDTH
      || y < 0
      || y + SHORT(patch->height) > SCREENHEIGHT)
     {
-        I_Error("Bad V_DrawTLPatch");
+        return;
     }
 
     col = 0;
@@ -409,7 +504,7 @@ void V_DrawAltTLPatch(int x, int y, patch_t * patch)
      || y < 0
      || y + SHORT(patch->height) > SCREENHEIGHT)
     {
-        I_Error("Bad V_DrawAltTLPatch");
+        return;
     }
 
     col = 0;
@@ -461,7 +556,7 @@ void V_DrawShadowedPatch(int x, int y, patch_t *patch)
      || y < 0
      || y + SHORT(patch->height) > SCREENHEIGHT)
     {
-        I_Error("Bad V_DrawShadowedPatch");
+        return;
     }
 
     col = 0;
@@ -551,7 +646,7 @@ void V_DrawFilledBox(int x, int y, int w, int h, int c)
     pixel_t *buf, *buf1;
     int x1, y1;
 
-    V_PrepareFramebufferWrite();
+    V_PrepareFramebufferWriteRect(x, y, w, h);
 
     buf = I_VideoBuffer + SCREENWIDTH * y + x;
 
@@ -573,7 +668,7 @@ void V_DrawHorizLine(int x, int y, int w, int c)
     pixel_t *buf;
     int x1;
 
-    V_PrepareFramebufferWrite();
+    V_PrepareFramebufferWriteRect(x, y, w, 1);
 
     buf = I_VideoBuffer + SCREENWIDTH * y + x;
 
@@ -588,7 +683,7 @@ void V_DrawVertLine(int x, int y, int h, int c)
     pixel_t *buf;
     int y1;
 
-    V_PrepareFramebufferWrite();
+    V_PrepareFramebufferWriteRect(x, y, 1, h);
 
     buf = I_VideoBuffer + SCREENWIDTH * y + x;
 
@@ -614,7 +709,7 @@ void V_DrawBox(int x, int y, int w, int h, int c)
  
 void V_DrawRawScreen(pixel_t *raw)
 {
-    V_PrepareFramebufferWrite();
+    V_PrepareFramebufferWriteRect(0, 0, SCREENWIDTH, SCREENHEIGHT);
     memcpy(dest_screen, raw, SCREENWIDTH * SCREENHEIGHT * sizeof(*dest_screen));
 }
 

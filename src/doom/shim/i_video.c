@@ -22,6 +22,7 @@
 #include "m_controls.h"
 
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -72,12 +73,318 @@ static pixel_t video_buf[SCREENWIDTH * SCREENHEIGHT];
 static grabmouse_callback_t grabmouse_cb;
 
 #define LETTERBOX_Y  ((OF_SCREEN_H - SCREENHEIGHT) / 2)
+#define GPU_PACE_SAMPLES 32
+#define GPU_PACE_WARMUP_SAMPLES 8
+#define GPU_PACE_MIN_US 16667u
+#define GPU_PACE_FINE_VRR_MIN_US 19000u
+#define GPU_PACE_MAX_US 23800u
+#define GPU_PACE_MARGIN_US 1000u
+#define GPU_PACE_WAIT_CAP_US 1000u
+#define GPU_PACE_SPIKE_US 50000u
+#define GPU_PACE_ENABLE_MAX_TARGET_US GPU_PACE_MAX_US
+#define GPU_PACE_VTOTAL_MIN OF_VIDEO_VTOTAL_60HZ
+#define GPU_PACE_VTOTAL_MAX OF_VIDEO_VTOTAL_42HZ
+#define GPU_PACE_VTOTAL_HYSTERESIS 5u
+#define GPU_PACE_VTOTAL_RAISE_STEP 24u
+#define GPU_PACE_VTOTAL_LOWER_STEP 24u
+#define GPU_PACE_VTOTAL_UPDATE_US 500000u
+
+typedef struct
+{
+    unsigned int samples[GPU_PACE_SAMPLES];
+    unsigned int sample_count;
+    unsigned int sample_pos;
+    unsigned int target_us;
+    unsigned int vrr_target_us;
+    unsigned int last_queue_us;
+    unsigned int current_vtotal;
+    unsigned int last_vtotal_update_us;
+    uint32_t timing_vblank_count;
+    uint64_t timing_vblank_us;
+    unsigned int refresh_period_us;
+    int options_checked;
+    int enabled;
+    int fine_vrr_enabled;
+} gpu_adaptive_pace_t;
+
+static gpu_adaptive_pace_t gpu_pace;
+
+static void I_CheckAdaptivePacingOptions(void)
+{
+    if (gpu_pace.options_checked)
+        return;
+
+    gpu_pace.enabled = M_CheckParm("-noadaptivepacing") <= 0;
+    gpu_pace.fine_vrr_enabled = gpu_pace.enabled
+                              && M_CheckParm("-nofinevrr") <= 0
+                              && M_CheckParm("-fixed60") <= 0;
+    gpu_pace.options_checked = 1;
+}
+
+static unsigned int I_AdaptivePacePercentile(void)
+{
+    unsigned int sorted[GPU_PACE_SAMPLES];
+    unsigned int n = gpu_pace.sample_count;
+    unsigned int idx;
+
+    if (n == 0)
+        return GPU_PACE_MIN_US;
+
+    for (unsigned int i = 0; i < n; i++)
+    {
+        unsigned int value = gpu_pace.samples[i];
+        unsigned int j = i;
+
+        while (j > 0 && sorted[j - 1] > value)
+        {
+            sorted[j] = sorted[j - 1];
+            j--;
+        }
+        sorted[j] = value;
+    }
+
+    idx = (n * 7u) / 8u;
+    if (idx >= n)
+        idx = n - 1u;
+
+    return sorted[idx];
+}
+
+static void I_UpdateMeasuredRefreshPeriod(void)
+{
+    of_video_timing_t timing;
+
+    of_video_get_timing(&timing);
+    if (timing.vblank_count == 0 || timing.last_vblank_us == 0)
+        return;
+
+    if (gpu_pace.timing_vblank_count != 0 &&
+        timing.vblank_count != gpu_pace.timing_vblank_count &&
+        timing.last_vblank_us > gpu_pace.timing_vblank_us)
+    {
+        uint32_t delta_vblanks =
+            timing.vblank_count - gpu_pace.timing_vblank_count;
+        uint64_t delta_us =
+            timing.last_vblank_us - gpu_pace.timing_vblank_us;
+
+        if (delta_vblanks != 0)
+        {
+            unsigned int period_us =
+                (unsigned int)(delta_us / delta_vblanks);
+
+            if (period_us >= 10000u && period_us <= 25000u)
+                gpu_pace.refresh_period_us = period_us;
+        }
+    }
+
+    gpu_pace.timing_vblank_count = timing.vblank_count;
+    gpu_pace.timing_vblank_us = timing.last_vblank_us;
+}
+
+static unsigned int I_PaceTargetToVTotal(unsigned int target_us)
+{
+    uint64_t vtotal;
+    unsigned int current_vtotal;
+    unsigned int current_period_us;
+
+    current_vtotal = gpu_pace.current_vtotal != 0
+                   ? gpu_pace.current_vtotal
+                   : OF_VIDEO_VTOTAL_60HZ;
+    current_period_us = gpu_pace.refresh_period_us != 0
+                      ? gpu_pace.refresh_period_us
+                      : GPU_PACE_MIN_US;
+
+    vtotal = ((uint64_t)current_vtotal * target_us
+              + (current_period_us / 2u)) / current_period_us;
+
+    if (vtotal < GPU_PACE_VTOTAL_MIN)
+        vtotal = GPU_PACE_VTOTAL_MIN;
+    if (vtotal > GPU_PACE_VTOTAL_MAX)
+        vtotal = GPU_PACE_VTOTAL_MAX;
+
+    return (unsigned int)vtotal;
+}
+
+static void I_UpdateFineVRR(unsigned int target_us)
+{
+    unsigned int now_us;
+    unsigned int desired_vtotal;
+    unsigned int current_vtotal;
+    unsigned int delta;
+    unsigned int next_vtotal;
+
+    I_UpdateMeasuredRefreshPeriod();
+
+    if (!gpu_pace.fine_vrr_enabled ||
+        gpu_pace.sample_count < GPU_PACE_WARMUP_SAMPLES)
+        return;
+
+    if (gpu_pace.vrr_target_us == 0)
+    {
+        gpu_pace.vrr_target_us = target_us;
+    }
+    else
+    {
+        gpu_pace.vrr_target_us =
+            (gpu_pace.vrr_target_us * 7u + target_us + 4u) / 8u;
+    }
+
+    now_us = of_time_us();
+    if (gpu_pace.last_vtotal_update_us != 0 &&
+        now_us - gpu_pace.last_vtotal_update_us < GPU_PACE_VTOTAL_UPDATE_US)
+        return;
+
+    current_vtotal = gpu_pace.current_vtotal != 0
+                   ? gpu_pace.current_vtotal
+                   : OF_VIDEO_VTOTAL_60HZ;
+    desired_vtotal = I_PaceTargetToVTotal(gpu_pace.vrr_target_us);
+    delta = desired_vtotal > current_vtotal
+          ? desired_vtotal - current_vtotal
+          : current_vtotal - desired_vtotal;
+
+    if (delta < GPU_PACE_VTOTAL_HYSTERESIS)
+        return;
+
+    next_vtotal = desired_vtotal;
+    if (desired_vtotal > current_vtotal &&
+        desired_vtotal - current_vtotal > GPU_PACE_VTOTAL_RAISE_STEP)
+    {
+        next_vtotal = current_vtotal + GPU_PACE_VTOTAL_RAISE_STEP;
+    }
+    else if (current_vtotal > desired_vtotal &&
+             current_vtotal - desired_vtotal > GPU_PACE_VTOTAL_LOWER_STEP)
+    {
+        next_vtotal = current_vtotal - GPU_PACE_VTOTAL_LOWER_STEP;
+    }
+
+    of_video_set_refresh_vtotal(next_vtotal);
+    gpu_pace.current_vtotal = next_vtotal;
+    gpu_pace.last_vtotal_update_us = now_us;
+    R_Perf_PacingSetVTotal(next_vtotal);
+}
+
+static unsigned int I_UpdateAdaptivePaceTarget(unsigned int sample_us)
+{
+    unsigned int desired_us;
+    unsigned int min_target_us;
+
+    if (sample_us == 0)
+        sample_us = GPU_PACE_MIN_US;
+
+    if (sample_us > GPU_PACE_SPIKE_US)
+        return gpu_pace.target_us ? gpu_pace.target_us : GPU_PACE_MIN_US;
+
+    gpu_pace.samples[gpu_pace.sample_pos] = sample_us;
+    gpu_pace.sample_pos = (gpu_pace.sample_pos + 1u) % GPU_PACE_SAMPLES;
+    if (gpu_pace.sample_count < GPU_PACE_SAMPLES)
+        gpu_pace.sample_count++;
+
+    desired_us = I_AdaptivePacePercentile() + GPU_PACE_MARGIN_US;
+    min_target_us = gpu_pace.fine_vrr_enabled
+                  ? GPU_PACE_FINE_VRR_MIN_US
+                  : GPU_PACE_MIN_US;
+
+    if (desired_us < min_target_us)
+        desired_us = min_target_us;
+    if (desired_us > GPU_PACE_MAX_US)
+        desired_us = GPU_PACE_MAX_US;
+
+    if (gpu_pace.target_us == 0)
+    {
+        gpu_pace.target_us = desired_us;
+    }
+    else if (desired_us > gpu_pace.target_us)
+    {
+        gpu_pace.target_us = (gpu_pace.target_us + desired_us + 1u) / 2u;
+    }
+    else
+    {
+        gpu_pace.target_us = (gpu_pace.target_us * 3u + desired_us) / 4u;
+    }
+
+    R_Perf_PacingSetTargetUS(gpu_pace.target_us);
+    I_UpdateFineVRR(gpu_pace.target_us);
+    return gpu_pace.target_us;
+}
+
+static void I_AdaptiveGpuPaceBeforeFlip(void)
+{
+    unsigned int now_us;
+    unsigned int target_us;
+    unsigned int prepare_us;
+    unsigned int elapsed_us;
+    unsigned int sample_us;
+    unsigned int wait_us;
+    unsigned int wait_start_us;
+    unsigned int wait_deadline_us;
+    unsigned int waited_us;
+
+    I_CheckAdaptivePacingOptions();
+
+    if (!gpu_pace.enabled)
+        return;
+
+    now_us = of_time_us();
+    prepare_us = R_Perf_PacingCurrentPrepareUS();
+    elapsed_us = gpu_pace.last_queue_us != 0
+               ? now_us - gpu_pace.last_queue_us
+               : 0;
+    /* Learn from renderer cost, not from the current scanout interval.
+     * Otherwise, once VRR stretches to a slower vtotal, that longer
+     * present interval feeds back into the target and can lock us at the
+     * slowest refresh even after the renderer has recovered. */
+    sample_us = prepare_us;
+
+    target_us = I_UpdateAdaptivePaceTarget(sample_us);
+
+    if (gpu_pace.last_queue_us == 0 ||
+        gpu_pace.sample_count < GPU_PACE_WARMUP_SAMPLES ||
+        (!gpu_pace.fine_vrr_enabled &&
+         target_us <= GPU_PACE_MIN_US + GPU_PACE_MARGIN_US) ||
+        target_us > GPU_PACE_ENABLE_MAX_TARGET_US)
+        return;
+
+    if (elapsed_us >= target_us)
+        return;
+
+    wait_us = target_us - elapsed_us;
+    if (wait_us > GPU_PACE_WAIT_CAP_US)
+        wait_us = GPU_PACE_WAIT_CAP_US;
+
+    wait_start_us = of_time_us();
+    wait_deadline_us = wait_start_us + wait_us;
+    while ((int)(of_time_us() - wait_deadline_us) < 0)
+        __asm__ volatile("" ::: "memory");
+    waited_us = of_time_us() - wait_start_us;
+    R_Perf_PacingAddWait(waited_us);
+}
+
+static void I_AdaptiveGpuPaceQueued(void)
+{
+    I_CheckAdaptivePacingOptions();
+
+    if (!gpu_pace.enabled)
+        return;
+
+    gpu_pace.last_queue_us = of_time_us();
+}
+
+static void I_AdaptiveGpuPaceReset(void)
+{
+    gpu_pace.last_queue_us = 0;
+}
 
 /* ---- Init / shutdown ------------------------------------------------- */
 
 void I_InitGraphics(void)
 {
     of_video_init();
+    of_video_set_refresh_vtotal(OF_VIDEO_VTOTAL_60HZ);
+    gpu_pace.current_vtotal = OF_VIDEO_VTOTAL_60HZ;
+    gpu_pace.last_vtotal_update_us = of_time_us();
+    gpu_pace.refresh_period_us = GPU_PACE_MIN_US;
+    gpu_pace.vrr_target_us = 0;
+    R_Perf_PacingSetVTotal(gpu_pace.current_vtotal);
     of_video_set_display_mode(OF_DISPLAY_FRAMEBUFFER);
     of_video_set_color_mode(OF_VIDEO_MODE_8BIT);
 
@@ -183,7 +490,7 @@ void I_UpdateNoBlit(void) { }
 
 void I_FinishUpdate(void)
 {
-    /* Pace the fallback blit path to ~60 Hz.
+    /* Pace presentation to ~60 Hz.
      *
      * Before uncapped interpolation landed, TryRunTics() blocked ~28 ms
      * per iteration waiting for the next 35 Hz tic — that was the only
@@ -195,24 +502,32 @@ void I_FinishUpdate(void)
      * CPU speed, which starves audio/IRQ handling enough to appear as a
      * freeze with a stuck buzzing sound effect when the menu sfx fires.
      *
-     * Direct GPU flip already waits for the previous display swap in
-     * R_GPU_PresentFrame(), so sleeping here as well creates duplicate
-     * pacing and costs the frames we are trying to hit. */
+     * Direct GPU flip is paced by CMD_FLIP backpressure instead of an
+     * explicit post-present wait.  That gives the renderer a little room:
+     * the CPU can build the next frame while the previous swap is still
+     * pending, and the next CMD_FLIP naturally stalls until the single
+     * pending swap slot clears. */
     static unsigned int last_flip_us = 0;
+    const unsigned int target_us = 16667;  /* ~60 Hz */
+
     if (R_GPU_UsingDirectFramebuffer()) {
         last_flip_us = 0;
+        I_AdaptiveGpuPaceBeforeFlip();
         if (R_GPU_PresentFrame())
         {
+            I_AdaptiveGpuPaceQueued();
             R_Perf_CountPresentedFrame(1);
+            R_Perf_PacingFrameQueued();
             R_Perf_FrameEnd();
             return;
         }
 
+        I_AdaptiveGpuPaceReset();
         R_GPU_EndFrame();
     } else {
+        I_AdaptiveGpuPaceReset();
         R_GPU_EndFrame();
 
-        const unsigned int target_us = 16667;  /* ~60 Hz */
         unsigned int now = of_time_us();
         unsigned int dt  = now - last_flip_us;
         if (last_flip_us && dt < target_us) {
@@ -230,6 +545,7 @@ void I_FinishUpdate(void)
     of_video_flip();
     R_Perf_EndStage(R_PERF_STAGE_BLIT, blit_start);
     R_Perf_CountPresentedFrame(0);
+    R_Perf_PacingFrameQueued();
     R_Perf_FrameEnd();
 }
 

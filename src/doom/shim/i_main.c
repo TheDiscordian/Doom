@@ -110,6 +110,27 @@ static boolean CanOpenFile(const char *filename)
     return true;
 }
 
+/* The Pocket kernel reports undeclared data slots as openable (returning
+ * empty or stale content), so a bare CanOpenFile probe on slot:5 trips
+ * the DEH parser on instances that only declare a PWAD. Verify the file
+ * actually begins with a DeHackEd header before injecting `-deh`. */
+static boolean LooksLikeDehFile(const char *filename)
+{
+    static const char magic[] = "Patch File for DeHackEd";
+    char buf[sizeof(magic) - 1];
+    FILE *fp = fopen(filename, "rb");
+
+    if (fp == NULL)
+    {
+        return false;
+    }
+
+    size_t got = fread(buf, 1, sizeof(buf), fp);
+    fclose(fp);
+
+    return got == sizeof(buf) && memcmp(buf, magic, sizeof(buf)) == 0;
+}
+
 static const char *FindReadableFile(const char *const *filenames,
                                     size_t num_filenames,
                                     const char *fallback)
@@ -141,16 +162,10 @@ int main(int argc, char **argv)
     /* Boot the SDK. Audio/mixer init is deferred to I_SDL_InitSound
      * (i_sdlsound.c) so the sound module owns the channel count. */
     of_video_init();
+    of_video_set_refresh_vtotal(OF_VIDEO_VTOTAL_60HZ);
 
 #ifndef OF_PC
     ShowLoadingLogo();
-
-    {
-        const struct of_capabilities *c = of_get_caps();
-        printf("heap: base=%08x size=%u (%u KB) sdram=%u MB\n",
-               c->heap_base, c->heap_size, c->heap_size / 1024,
-               c->sdram_size / (1024*1024));
-    }
 
     RegisterPersistentFiles();
 #endif
@@ -176,6 +191,9 @@ int main(int argc, char **argv)
     };
     static const char *const pwad_candidates[] =
     {
+        "sigil/SIGIL_COMPAT_V1_23.wad",
+        "sigil/SIGIL_COMPAT_V1_21.wad",
+        "sigil/SIGIL_COMPAT_V1_2.wad",
         "sigil/SIGIL_COMPAT_v1_23.wad",
         "sigil/SIGIL_COMPAT_v1_21.wad",
         "sigil/SIGIL_COMPAT_v1_2.wad",
@@ -185,29 +203,43 @@ int main(int argc, char **argv)
         "revolution/TVR!.WAD",
         "tnt/TNT31.WAD",
     };
-
     const char *iwad_file = FindReadableFile(iwad_candidates,
                                              arrlen(iwad_candidates),
                                              "slot:3");
     const char *pwad_file = FindReadableFile(pwad_candidates,
                                              arrlen(pwad_candidates),
                                              NULL);
-    int   injected = 3;
-    char *injected_argv[] =
-    {
-        "-iwad", (char *) iwad_file, "-noautoload",
-        "-merge", (char *) pwad_file
-    };
+    const char *deh_file = NULL;
+    int injected = 0;
+    char *injected_argv[10];
+
+    injected_argv[injected++] = "-iwad";
+    injected_argv[injected++] = (char *) iwad_file;
+    injected_argv[injected++] = "-noautoload";
 
     if (pwad_file == NULL && CanOpenFile("slot:4"))
     {
         pwad_file = "slot:4";
-        injected_argv[4] = (char *) pwad_file;
     }
 
     if (pwad_file != NULL)
     {
-        injected = 5;
+        injected_argv[injected++] = "-merge";
+        injected_argv[injected++] = (char *) pwad_file;
+        injected_argv[injected++] = "-dehlump";
+    }
+
+    if (pwad_file != NULL
+     && strcmp(pwad_file, "slot:4") == 0
+     && LooksLikeDehFile("slot:5"))
+    {
+        deh_file = "slot:5";
+    }
+
+    if (deh_file != NULL)
+    {
+        injected_argv[injected++] = "-deh";
+        injected_argv[injected++] = (char *) deh_file;
     }
 
     I_SetOpenFPGASaveIdentity(iwad_file, pwad_file);

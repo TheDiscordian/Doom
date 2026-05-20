@@ -19,6 +19,8 @@
 #ifndef __D_LOOP__
 #define __D_LOOP__
 
+#include <stdint.h>
+
 #include "net_defs.h"
 #include "m_fixed.h"
 
@@ -72,6 +74,9 @@ extern boolean tryruntics_nonblocking;
 // Called at start of game loop to initialize timers
 void D_StartGameLoop(void);
 
+// Wall-clock time at which the game tic clock was anchored.
+uint64_t D_GameLoopStartTimeUS(void);
+
 // Initialize networking code and connect to server.
 
 boolean D_InitNetGame(net_connect_data_t *connect_data);
@@ -99,4 +104,3 @@ extern fixed_t offsetms;
 
 
 #endif
-

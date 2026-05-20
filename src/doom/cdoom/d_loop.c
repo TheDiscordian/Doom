@@ -125,19 +125,19 @@ static int player_class;
 
 static int GetAdjustedTime(void)
 {
-    int time_ms;
+    int64_t time_us;
 
-    time_ms = I_GetTimeMS();
+    time_us = (int64_t) I_GetTimeUS();
 
     if (new_sync)
     {
 	// Use the adjustments from net_client.c only if we are
 	// using the new sync mode.
 
-        time_ms += (offsetms / FRACUNIT);
+        time_us += ((int64_t) offsetms * 1000) / FRACUNIT;
     }
 
-    return (time_ms * TICRATE) / 1000;
+    return (int) ((time_us * TICRATE) / 1000000);
 }
 
 static boolean BuildNewTic(void)
@@ -203,6 +203,7 @@ static boolean BuildNewTic(void)
 // sends out a packet
 //
 int      lasttime;
+static uint64_t gameloop_start_time_us;
 
 void NetUpdate (void)
 {
@@ -305,6 +306,12 @@ void D_ReceiveTic(ticcmd_t *ticcmds, boolean *players_mask)
 void D_StartGameLoop(void)
 {
     lasttime = GetAdjustedTime() / ticdup;
+    gameloop_start_time_us = I_GetTimeUS();
+}
+
+uint64_t D_GameLoopStartTimeUS(void)
+{
+    return gameloop_start_time_us;
 }
 
 //
@@ -890,4 +897,3 @@ boolean D_NonVanillaPlayback(boolean conditional, int lumpnum,
 
     return true;
 }
-

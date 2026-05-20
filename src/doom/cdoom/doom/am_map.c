@@ -596,6 +596,7 @@ AM_Responder
 
     int rc;
     static int bigstate=0;
+    static boolean map_toggle_down = false;
     static char buffer[20];
     int key;
 
@@ -625,10 +626,18 @@ AM_Responder
     {
 	if (ev->type == ev_keydown && ev->data1 == key_map_toggle)
 	{
-	    AM_Start ();
-	    viewactive = false;
+            if (!map_toggle_down)
+            {
+                AM_Start ();
+                viewactive = false;
+                map_toggle_down = true;
+            }
 	    rc = true;
 	}
+        else if (ev->type == ev_keyup && ev->data1 == key_map_toggle)
+        {
+            map_toggle_down = false;
+        }
     }
     else if (ev->type == ev_keydown)
     {
@@ -667,9 +676,13 @@ AM_Responder
         }
         else if (key == key_map_toggle)
         {
-            bigstate = 0;
-            viewactive = true;
-            AM_Stop ();
+            if (!map_toggle_down)
+            {
+                bigstate = 0;
+                viewactive = true;
+                AM_Stop ();
+                map_toggle_down = true;
+            }
         }
         else if (key == key_map_maxzoom)
         {
@@ -727,7 +740,11 @@ AM_Responder
         rc = false;
         key = ev->data1;
 
-        if (key == key_map_east)
+        if (key == key_map_toggle)
+        {
+            map_toggle_down = false;
+        }
+        else if (key == key_map_east)
         {
             if (!followplayer) m_paninc.x = 0;
         }
@@ -1358,6 +1375,10 @@ void AM_Drawer (void)
 {
     if (!automapactive) return;
 
+    V_RestoreBuffer();
+    fb = I_VideoBuffer;
+    V_MarkRect(f_x, f_y, f_w, f_h);
+
     AM_clearFB(BACKGROUND);
     if (grid)
 	AM_drawGrid(GRIDCOLORS);
@@ -1368,7 +1389,5 @@ void AM_Drawer (void)
     AM_drawCrosshair(XHAIRCOLORS);
 
     AM_drawMarks();
-
-    V_MarkRect(f_x, f_y, f_w, f_h);
 
 }

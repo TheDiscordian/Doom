@@ -20,6 +20,8 @@
 #ifndef __I_TIMER__
 #define __I_TIMER__
 
+#include <stdint.h>
+
 #define TICRATE 35
 
 // Called by D_DoomLoop,
@@ -28,6 +30,12 @@ int I_GetTime (void);
 
 // returns current time in ms
 int I_GetTimeMS (void);
+
+// returns current time in us
+uint64_t I_GetTimeUS(void);
+
+// returns the display-paced render sample time in us
+uint64_t I_GetDisplayTimeUS(void);
 
 // Pause for a specified number of ms
 void I_Sleep(int ms);
@@ -39,4 +47,3 @@ void I_InitTimer(void);
 void I_WaitVBL(int count);
 
 #endif
-

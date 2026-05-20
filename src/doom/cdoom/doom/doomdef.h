@@ -38,8 +38,9 @@
 
 
 // If rangecheck is undefined,
-// most parameter validation debugging code will not be compiled
-#define RANGECHECK
+// most parameter validation debugging code will not be compiled.
+// Keep this off in release builds; these checks sit in hot render paths.
+// #define RANGECHECK
 
 // The maximum number of players, multiplayer/networking.
 #define MAXPLAYERS 4

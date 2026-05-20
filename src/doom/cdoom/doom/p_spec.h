@@ -237,8 +237,8 @@ typedef struct
  // max # of wall switches in a level
 #define MAXSWITCHES		50
 
- // 4 players, 4 buttons each at once, max.
-#define MAXBUTTONS		16
+ // Raised for limit-removing PWADs with many simultaneous switch timers.
+#define MAXBUTTONS		64
 
  // 1 second, in ticks. 
 #define BUTTONTIME      35             
@@ -300,7 +300,7 @@ typedef struct
 
 #define PLATWAIT		3
 #define PLATSPEED		FRACUNIT
-#define MAXPLATS		30
+#define MAXPLATS		128
 
 
 extern plat_t*	activeplats[MAXPLATS];
@@ -512,7 +512,7 @@ typedef struct
 
 #define CEILSPEED		FRACUNIT
 #define CEILWAIT		150
-#define MAXCEILINGS		30
+#define MAXCEILINGS		128
 
 extern ceiling_t*	activeceilings[MAXCEILINGS];
 

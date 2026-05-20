@@ -1,0 +1,28 @@
+{
+    "instance": {
+        "magic": "APF_VER_1",
+        "variant_select": {
+            "id": 666,
+            "select": false
+        },
+        "data_slots": [
+            { "id": 1, "filename": "os.bin" },
+            { "id": 2, "filename": "doom.elf" },
+            { "id": 3, "filename": "doom2/DOOM2.WAD" },
+            { "id": 4, "filename": "hellbound/HBOUND.WAD" },
+            { "id": 7, "filename": "bank.ofsf" },
+            { "id": 9, "filename": "hellbound/Hellbound.cfg" },
+            { "id": 10, "filename": "hellbound/Hellbound_0.sav" },
+            { "id": 11, "filename": "hellbound/Hellbound_1.sav" },
+            { "id": 12, "filename": "hellbound/Hellbound_2.sav" },
+            { "id": 13, "filename": "hellbound/Hellbound_3.sav" },
+            { "id": 14, "filename": "hellbound/Hellbound_4.sav" },
+            { "id": 15, "filename": "hellbound/Hellbound_5.sav" },
+            { "id": 16, "filename": "hellbound/Hellbound_6.sav" },
+            { "id": 17, "filename": "hellbound/Hellbound_7.sav" },
+            { "id": 18, "filename": "hellbound/Hellbound_8.sav" },
+            { "id": 19, "filename": "hellbound/Hellbound_9.sav" },
+            { "id": 20, "filename": "hellbound/Hellbound.sav" }
+        ]
+    }
+}

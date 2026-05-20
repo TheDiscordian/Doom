@@ -61,13 +61,16 @@
 
 //
 // Your plain vanilla vertex.
-// Note: transformed values not buffered locally,
-//  like some DOOM-alikes ("wt", "WebView") did.
+// Per-view angle/distance cache avoids repeated BSP projection work.
 //
 typedef struct
 {
     fixed_t	x;
     fixed_t	y;
+    angle_t	viewangle;
+    fixed_t	viewdist;
+    int		viewanglevalidcount;
+    int		viewdistvalidcount;
     
 } vertex_t;
 

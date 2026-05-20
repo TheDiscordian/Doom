@@ -388,6 +388,19 @@ void R_GenerateLookup (int texnum)
 //
 // R_GetColumn
 //
+static byte *R_CachedLumpData(lumpindex_t lump)
+{
+    lumpinfo_t *info = lumpinfo[lump];
+
+    if (info->wad_file->mapped != NULL)
+	return info->wad_file->mapped + info->position;
+
+    if (info->cache != NULL)
+	return info->cache;
+
+    return W_CacheLumpNum(lump, PU_CACHE);
+}
+
 byte*
 R_GetColumn
 ( int		tex,
@@ -401,7 +414,7 @@ R_GetColumn
     ofs = texturecolumnofs[tex][col];
     
     if (lump > 0)
-	return (byte *)W_CacheLumpNum(lump,PU_CACHE)+ofs;
+	return R_CachedLumpData(lump)+ofs;
 
     if (!texturecomposite[tex])
 	R_GenerateComposite (tex);
@@ -909,4 +922,3 @@ void R_PrecacheLevel (void)
 
     Z_Free(spritepresent);
 }
-

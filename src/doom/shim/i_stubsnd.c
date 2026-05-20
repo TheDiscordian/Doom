@@ -70,6 +70,9 @@ static boolean opl_Init(void)
 {
     of_audio_init();
     of_mixer_init(32, 48000);
+    of_mixer_set_master_volume(255);
+    of_mixer_set_group_volume(OF_MIXER_GROUP_MUSIC, 255);
+    of_mixer_set_group_volume(OF_MIXER_GROUP_SFX, 255);
 
     int rc = of_midi_init();
 
@@ -157,9 +160,8 @@ static void opl_UnRegisterSong(void *handle)
 static void opl_PlaySong(void *handle, boolean looping)
 {
     of_song_t *song = handle;
-    if (!song) { printf("MIDI: PlaySong NULL handle\n"); return; }
-    int rc = of_midi_play(song->midi_data, song->midi_len, looping);
-    printf("MIDI: PlaySong rc=%d len=%zu loop=%d\n", rc, song->midi_len, looping);
+    if (!song) return;
+    (void)of_midi_play(song->midi_data, song->midi_len, looping);
 }
 
 static void    opl_StopSong(void)    { of_midi_stop(); }

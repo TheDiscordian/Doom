@@ -46,7 +46,7 @@
                 "name": "Data 3",
                 "required": false,
                 "parameters": 0,
-                "extensions": ["mid", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
+                "extensions": ["mid", "dat", "png", "bin", "grp", "pak", "wad", "deh", "bex", "rom", "nes"],
                 "deferload": true
             },
             {

@@ -485,9 +485,18 @@ P_BlockLinesIterator
     offset = y*bmapwidth+x;
 	
     offset = *(blockmap+offset);
-
-    for ( list = blockmaplump+offset ; *list != -1 ; list++)
+    if (offset < 4 || offset >= blockmaplump_count)
     {
+	return true;
+    }
+
+    for (list = blockmaplump + offset;
+	 list < blockmaplump + blockmaplump_count && *list != -1;
+	 list++)
+    {
+	if (*list < 0 || *list >= numlines)
+	    continue;
+
 	ld = &lines[*list];
 
 	if (ld->validcount == validcount)
@@ -547,6 +556,41 @@ int		ptflags;
 
 static void InterceptsOverrun(int num_intercepts, intercept_t *intercept);
 
+static boolean P_ShouldEmulateVanillaOverruns(void)
+{
+    return demoplayback || demorecording || netgame;
+}
+
+static boolean P_AddIntercept(boolean isaline, fixed_t frac, void *data)
+{
+    int count = intercept_p - intercepts;
+
+    if (count >= MAXINTERCEPTS)
+    {
+	return true;
+    }
+
+    intercept_p->frac = frac;
+    intercept_p->isaline = isaline;
+
+    if (isaline)
+    {
+	intercept_p->d.line = (line_t *) data;
+    }
+    else
+    {
+	intercept_p->d.thing = (mobj_t *) data;
+    }
+
+    if (P_ShouldEmulateVanillaOverruns())
+    {
+	InterceptsOverrun(count, intercept_p);
+    }
+
+    intercept_p++;
+    return true;
+}
+
 //
 // PIT_AddLineIntercepts.
 // Looks for lines in the given block
@@ -599,13 +643,7 @@ PIT_AddLineIntercepts (line_t* ld)
     }
     
 	
-    intercept_p->frac = frac;
-    intercept_p->isaline = true;
-    intercept_p->d.line = ld;
-    InterceptsOverrun(intercept_p - intercepts, intercept_p);
-    intercept_p++;
-
-    return true;	// continue
+    return P_AddIntercept(true, frac, ld);
 }
 
 
@@ -665,13 +703,7 @@ boolean PIT_AddThingIntercepts (mobj_t* thing)
     if (frac < 0)
 	return true;		// behind source
 
-    intercept_p->frac = frac;
-    intercept_p->isaline = false;
-    intercept_p->d.thing = thing;
-    InterceptsOverrun(intercept_p - intercepts, intercept_p);
-    intercept_p++;
-
-    return true;		// keep going
+    return P_AddIntercept(false, frac, thing);
 }
 
 
@@ -997,6 +1029,4 @@ P_PathTraverse
     // go through the sorted list
     return P_TraverseIntercepts ( trav, FRACUNIT );
 }
-
-
 

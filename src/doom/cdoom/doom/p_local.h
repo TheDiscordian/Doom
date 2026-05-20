@@ -152,7 +152,7 @@ typedef struct
 // Extended MAXINTERCEPTS, to allow for intercepts overrun emulation.
 
 #define MAXINTERCEPTS_ORIGINAL 128
-#define MAXINTERCEPTS          (MAXINTERCEPTS_ORIGINAL + 61)
+#define MAXINTERCEPTS          1024
 
 extern intercept_t	intercepts[MAXINTERCEPTS];
 extern intercept_t*	intercept_p;
@@ -216,7 +216,7 @@ extern	line_t*		ceilingline;
 // We keep the original limit, to detect what variables in memory were
 // overwritten (see SpechitOverrun())
 
-#define MAXSPECIALCROSS 		20
+#define MAXSPECIALCROSS 		64
 #define MAXSPECIALCROSS_ORIGINAL	8
 
 extern	line_t*	spechit[MAXSPECIALCROSS];
@@ -269,6 +269,7 @@ P_RadiusAttack
 extern byte*		rejectmatrix;	// for fast sight rejection
 extern short*		blockmaplump;	// offsets in blockmap are from here
 extern short*		blockmap;
+extern int		blockmaplump_count;
 extern int		bmapwidth;
 extern int		bmapheight;	// in mapblocks
 extern fixed_t		bmaporgx;

@@ -70,6 +70,12 @@ P_SetPsprite
 	psp->state = state;
 	psp->tics = state->tics;	// could be 0
 
+	if (position == ps_flash)
+	{
+	    psp->sx = player->psprites[ps_weapon].sx;
+	    psp->sy = player->psprites[ps_weapon].sy;
+	}
+
 	if (state->misc1)
 	{
 	    // coordinate set
@@ -883,5 +889,4 @@ void P_MovePsprites (player_t* player)
     player->psprites[ps_flash].sx = player->psprites[ps_weapon].sx;
     player->psprites[ps_flash].sy = player->psprites[ps_weapon].sy;
 }
-
 

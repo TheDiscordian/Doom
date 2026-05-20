@@ -172,11 +172,14 @@ boolean D_Display (void)
     int				y;
     boolean			wipe;
     boolean			redrawsbar;
+    boolean                     drawstatusbar_after_view;
     unsigned int                display_start;
 
     R_Perf_FrameStart();
+    R_Perf_PacingFrameStart();
     display_start = R_Perf_BeginStage();
     redrawsbar = false;
+    drawstatusbar_after_view = false;
 
     // change the view size if needed
     if (setsizeneeded)
@@ -212,7 +215,10 @@ boolean D_Display (void)
 	    redrawsbar = true;
 	if (inhelpscreensstate && !inhelpscreens)
 	    redrawsbar = true;              // just put away the help screen
-	ST_Drawer (viewheight == SCREENHEIGHT, redrawsbar );
+	if (automapactive)
+	    ST_Drawer (viewheight == SCREENHEIGHT, redrawsbar );
+	else
+	    drawstatusbar_after_view = true;
 	fullscreen = viewheight == SCREENHEIGHT;
 	break;
 
@@ -237,6 +243,8 @@ boolean D_Display (void)
     {
 	R_GPU_BeginFrame ();
 	R_RenderPlayerView (&players[displayplayer]);
+	if (drawstatusbar_after_view)
+	    ST_Drawer (viewheight == SCREENHEIGHT, redrawsbar );
     }
 
     if (gamestate == GS_LEVEL && gametic)
@@ -295,7 +303,10 @@ boolean D_Display (void)
     NetUpdate ();         // send out any new accumulation
 
     if (wipe)
+    {
+        R_Perf_PacingFrameCancel();
         R_Perf_FrameCancel();
+    }
     else
         R_Perf_EndStage(R_PERF_STAGE_DISPLAY, display_start);
     return wipe;
@@ -436,6 +447,7 @@ void D_RunFrame()
 
         wipestart = nowtime;
         R_Perf_FrameStart();
+        R_Perf_PacingFrameStart();
         display_start = R_Perf_BeginStage();
         R_GPU_BeginDisplayFrame();
         wipe = !wipe_ScreenWipe(wipe_Melt
@@ -451,14 +463,14 @@ void D_RunFrame()
     I_StartFrame ();
 
     {
-        static int last_gametic = -1;
-        static int last_tic_ms  = 0;
         static int nointerp = -1;
         boolean    simulation_paused;
         boolean    uncapped_ok;
 
         if (nointerp < 0)
         {
+            // Interpolation is the default for the Pocket build. Keep
+            // -nointerp/-capped as explicit escape hatches for testing.
             nointerp = M_CheckParm("-nointerp") > 0
                     || M_CheckParm("-capped") > 0;
         }
@@ -472,7 +484,6 @@ void D_RunFrame()
         uncapped_ok = crispy_uncapped
                       && !nointerp
                       && !simulation_paused
-                      && !demoplayback
                       && !demorecording
                       && !netgame
                       && !singletics;
@@ -482,24 +493,27 @@ void D_RunFrame()
 
         TryRunTics ();
 
-        // If a new tic (or tics) just ran, anchor our wall-clock to "now" so
-        // subsequent sub-tic frames measure elapsed time from the most recent
-        // tic boundary. If multiple tics ran in one call (catch-up), they all
-        // effectively happened "now" — the small timing error is invisible.
-        if (gametic != last_gametic)
-        {
-            last_gametic = gametic;
-            last_tic_ms  = I_GetTimeMS();
-        }
-
         if (uncapped_ok)
         {
-            int dt = I_GetTimeMS() - last_tic_ms;
-            if (dt < 0) dt = 0;
-            // fractionaltic = dt * TICRATE * FRACUNIT / 1000, clamped to [0,FRACUNIT]
-            fractionaltic = (fixed_t)(((int64_t)dt * TICRATE * FRACUNIT) / 1000);
-            if (fractionaltic < 0)         fractionaltic = 0;
-            if (fractionaltic > FRACUNIT)  fractionaltic = FRACUNIT;
+            uint64_t now_us = I_GetDisplayTimeUS();
+            uint64_t base_us = D_GameLoopStartTimeUS();
+            uint64_t rel_us = now_us > base_us ? now_us - base_us : 0;
+            uint64_t tic_start_us = ((uint64_t)gametic * 1000000ULL) / TICRATE;
+            uint64_t dt_us = 0;
+
+            if (gametic > 0 && rel_us > tic_start_us)
+            {
+                dt_us = rel_us - tic_start_us;
+            }
+
+            if (dt_us >= (1000000ULL + TICRATE - 1) / TICRATE)
+            {
+                fractionaltic = FRACUNIT;
+            }
+            else
+            {
+                fractionaltic = (fixed_t)((dt_us * TICRATE * FRACUNIT) / 1000000ULL);
+            }
         }
         else
         {
@@ -1611,6 +1625,10 @@ void D_DoomMain (void)
     //
     if (!M_ParmExists("-nodeh"))
     {
+        // DEHEXTRA: mark the extended mobjinfo slots unspawnable before
+        // any DEH patch can write to them.
+        DEH_InitExtra();
+
         // Some IWADs have dehacked patches that need to be loaded for
         // them to be played properly.
         LoadIwadDeh();
@@ -1789,7 +1807,7 @@ void D_DoomMain (void)
         {
             if (!strncmp(lumpinfo[i]->name, "DEHACKED", 8))
             {
-                DEH_LoadLump(i, false, false);
+                DEH_LoadLump(i, false, true);
                 loaded++;
             }
         }
@@ -1808,7 +1826,7 @@ void D_DoomMain (void)
     {
 	// These are the lumps that will be checked in IWAD,
 	// if any one is not present, execution will be aborted.
-	char name[23][8]=
+		char name[23][9]=
 	{
 	    "e2m1","e2m2","e2m3","e2m4","e2m5","e2m6","e2m7","e2m8","e2m9",
 	    "e3m1","e3m3","e3m3","e3m4","e3m5","e3m6","e3m7","e3m8","e3m9",

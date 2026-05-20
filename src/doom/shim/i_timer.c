@@ -1,4 +1,4 @@
-/* i_timer.c — openfpgaOS timer: 1/35s tics, ms clock. */
+/* i_timer.c -- openfpgaOS timer: 1/35s tics, us clock. */
 
 #include "of.h"
 #include "i_timer.h"
@@ -8,21 +8,80 @@
 #include <time.h>
 #endif
 
-static unsigned int basetime = 0;
+static int timer_base_set = 0;
+static unsigned int base_us = 0;
+static unsigned int last_raw_us = 0;
+static uint64_t high_us = 0;
+static uint64_t display_vblank_period_us = 16667;
+static uint64_t display_last_vblank_raw_us = 0;
+static uint32_t display_last_vblank_count = 0;
+
+static uint64_t I_RawTimeUS(void)
+{
+    unsigned int raw_us = of_time_us();
+
+    if (!timer_base_set)
+    {
+        timer_base_set = 1;
+        base_us = raw_us;
+        last_raw_us = raw_us;
+    }
+    else if (raw_us < last_raw_us)
+    {
+        high_us += 1ULL << 32;
+    }
+
+    last_raw_us = raw_us;
+    return high_us + raw_us;
+}
+
+uint64_t I_GetTimeUS(void)
+{
+    return I_RawTimeUS() - base_us;
+}
+
+uint64_t I_GetDisplayTimeUS(void)
+{
+    of_video_timing_t timing;
+    uint64_t raw_now;
+    uint64_t sample_raw_us;
+
+    raw_now = I_RawTimeUS();
+    of_video_get_timing(&timing);
+
+    if (timing.last_vblank_us == 0 || timing.vblank_count == 0)
+        return raw_now - base_us;
+
+    if (display_last_vblank_raw_us != 0 &&
+        timing.vblank_count != display_last_vblank_count &&
+        timing.last_vblank_us > display_last_vblank_raw_us)
+    {
+        uint32_t count_delta = timing.vblank_count - display_last_vblank_count;
+        uint64_t elapsed_us = timing.last_vblank_us - display_last_vblank_raw_us;
+        uint64_t period_us = elapsed_us / count_delta;
+
+        if (period_us >= 10000 && period_us <= 25000)
+            display_vblank_period_us = period_us;
+    }
+
+    display_last_vblank_raw_us = timing.last_vblank_us;
+    display_last_vblank_count = timing.vblank_count;
+
+    sample_raw_us = timing.last_vblank_us + display_vblank_period_us;
+    if (sample_raw_us <= (uint64_t)base_us)
+        return raw_now - base_us;
+
+    return sample_raw_us - base_us;
+}
 
 int I_GetTime(void)
 {
-    unsigned int ticks = of_time_ms();
-    if (basetime == 0) basetime = ticks;
-    ticks -= basetime;
-    return (int)((ticks * TICRATE) / 1000);
+    return (int)((I_GetTimeUS() * TICRATE) / 1000000ULL);
 }
 
 int I_GetTimeMS(void)
 {
-    unsigned int ticks = of_time_ms();
-    if (basetime == 0) basetime = ticks;
-    return (int)(ticks - basetime);
+    return (int)(I_GetTimeUS() / 1000ULL);
 }
 
 void I_Sleep(int ms)
@@ -50,5 +109,11 @@ void I_WaitVBL(int count)
 
 void I_InitTimer(void)
 {
-    basetime = 0;
+    timer_base_set = 0;
+    base_us = 0;
+    last_raw_us = 0;
+    high_us = 0;
+    display_vblank_period_us = 16667;
+    display_last_vblank_raw_us = 0;
+    display_last_vblank_count = 0;
 }

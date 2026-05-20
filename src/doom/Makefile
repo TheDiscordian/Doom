@@ -42,6 +42,7 @@ SRCS_CXX    =
 # ── Per-app CFLAGS (applied on top of sdk.mk SDK_CFLAGS) ──────────────
 CFLAGS  = -Ishim -Icdoom -Icdoom/doom
 CFLAGS += -DDISABLE_SDL2MIXER -DDISABLE_SDL2NET
+CFLAGS += -DSMP_MAX_VOICES=20
 CFLAGS += -Wno-unused-parameter -Wno-unused-function
 CFLAGS += -Wno-unused-variable -Wno-sign-compare
 CFLAGS += -Wno-missing-field-initializers -Wno-unused-but-set-variable

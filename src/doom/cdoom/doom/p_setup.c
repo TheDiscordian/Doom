@@ -19,6 +19,7 @@
 
 
 
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 
@@ -41,6 +42,7 @@
 #include "s_sound.h"
 
 #include "doomstat.h"
+#include "r_bsp.h"
 
 
 void	P_SpawnMapThing (mapthing_t*	mthing);
@@ -86,6 +88,7 @@ int		bmapheight;	// size in mapblocks
 short*		blockmap;	// int for larger maps
 // offsets in blockmap are from here
 short*		blockmaplump;		
+int		blockmaplump_count;
 // origin of block map
 fixed_t		bmaporgx;
 fixed_t		bmaporgy;
@@ -144,6 +147,10 @@ void P_LoadVertexes (int lump)
     {
 	li->x = SHORT(ml->x)<<FRACBITS;
 	li->y = SHORT(ml->y)<<FRACBITS;
+	li->viewangle = 0;
+	li->viewdist = 0;
+	li->viewanglevalidcount = 0;
+	li->viewdistvalidcount = 0;
     }
 
     // Free buffer memory.
@@ -337,6 +344,7 @@ void P_LoadNodes (int lump)
     }
 	
     W_ReleaseLumpNum(lump);
+    R_BuildBSPRenderData();
 }
 
 
@@ -532,7 +540,13 @@ void P_LoadBlockMap (int lump)
 
     lumplen = W_LumpLength(lump);
     count = lumplen / 2;
+    blockmaplump_count = count;
 	
+    if (count < 4)
+    {
+	I_Error("P_LoadBlockMap: invalid BLOCKMAP lump");
+    }
+
     blockmaplump = Z_Malloc(lumplen, PU_LEVEL, NULL);
     W_ReadLump(lump, blockmaplump);
     blockmap = blockmaplump + 4;
@@ -550,6 +564,14 @@ void P_LoadBlockMap (int lump)
     bmaporgy = blockmaplump[1]<<FRACBITS;
     bmapwidth = blockmaplump[2];
     bmapheight = blockmaplump[3];
+
+    if (bmapwidth <= 0 || bmapheight <= 0
+     || bmapwidth > (INT_MAX - 4) / bmapheight
+     || 4 + bmapwidth * bmapheight > count
+     || bmapwidth * bmapheight > INT_MAX / (int)sizeof(*blocklinks))
+    {
+	I_Error("P_LoadBlockMap: invalid BLOCKMAP header");
+    }
 	
     // Clear out mobj chains
 
@@ -828,6 +850,3 @@ void P_Init (void)
     P_InitPicAnims ();
     R_InitSprites (sprnames);
 }
-
-
-

@@ -28,8 +28,8 @@ typedef struct {
     uint32_t sample_rate;
 } sfx_slot_t;
 
-/* Per-Doom-channel state (channel -> mixer voice). */
-static int channel_voice[NUM_CHANNELS];
+/* Per-Doom-channel state (channel -> stable mixer handle). */
+static of_mixer_handle_t channel_voice[NUM_CHANNELS];
 
 /* Sound devices we claim we can drive. */
 static const snddevice_t sdl_devices[] = {
@@ -106,7 +106,8 @@ static boolean I_SDL_InitSound(GameMission_t mission)
     /* Audio + mixer are initialised by music_opl_module's Init.  Two inits
      * race over master/group volumes and were the only divergence from
      * mididemo's clean path. */
-    for (int i = 0; i < NUM_CHANNELS; i++) channel_voice[i] = -1;
+    for (int i = 0; i < NUM_CHANNELS; i++)
+        channel_voice[i] = OF_MIXER_HANDLE_INVALID;
     return true;
 }
 
@@ -127,22 +128,72 @@ static void I_SDL_UpdateSound(void)
     of_mixer_pump();
 }
 
-/* Doom volume: 0..127, sep: 0..255 (0=left, 127=center, 255=right). */
-static void set_params(int voice, int vol, int sep)
+/* Doom volume: 0..127, sep: 0..254 (0=left, 128=center, 254=right).
+ * The target mixer output is physically reversed for SFX, so hand the
+ * mixer the opposite channel volumes while keeping Doom's sep semantics
+ * intact above this layer. */
+static void set_params(of_mixer_handle_t voice, int vol, int sep)
 {
-    if (voice < 0) return;
+    if (voice == OF_MIXER_HANDLE_INVALID) return;
     /* Map 0..127 -> 0..255 */
     int v = (vol * 255) / 127;
     int left  = ((254 - sep) * v) / 255;
     int right = (sep        * v) / 255;
     if (left > 255)  left  = 255;
     if (right > 255) right = 255;
-    of_mixer_set_vol_lr(voice, left, right);
+    of_mixer_set_vol_lr_h(voice, right, left);
+}
+
+static boolean sfx_voice_owned(of_mixer_handle_t voice)
+{
+    if (voice == OF_MIXER_HANDLE_INVALID || !of_mixer_handle_active(voice))
+        return false;
+
+    int group = of_mixer_handle_group(voice);
+    return group < 0 || group == OF_MIXER_GROUP_SFX;
+}
+
+static void clear_voice_refs(of_mixer_handle_t voice)
+{
+    for (int i = 0; i < NUM_CHANNELS; i++)
+    {
+        if (channel_voice[i] == voice)
+            channel_voice[i] = OF_MIXER_HANDLE_INVALID;
+    }
+}
+
+static void stop_channel_voice(int channel)
+{
+    of_mixer_handle_t voice = channel_voice[channel];
+
+    if (sfx_voice_owned(voice))
+        of_mixer_stop_h(voice);
+
+    channel_voice[channel] = OF_MIXER_HANDLE_INVALID;
+}
+
+static int steal_one_sfx_voice(void)
+{
+    for (int i = 0; i < NUM_CHANNELS; i++)
+    {
+        if (sfx_voice_owned(channel_voice[i]))
+        {
+            stop_channel_voice(i);
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static void I_SDL_UpdateSoundParams(int channel, int vol, int sep)
 {
     if ((unsigned)channel >= NUM_CHANNELS) return;
+    if (!sfx_voice_owned(channel_voice[channel]))
+    {
+        channel_voice[channel] = OF_MIXER_HANDLE_INVALID;
+        return;
+    }
     set_params(channel_voice[channel], vol, sep);
 }
 
@@ -156,7 +207,7 @@ static int I_SDL_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep, int p
 {
     sfx_slot_t *slot;
     uint32_t    rate;
-    int         voice;
+    of_mixer_handle_t voice;
 
     if ((unsigned)channel >= NUM_CHANNELS) return -1;
 
@@ -165,8 +216,8 @@ static int I_SDL_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep, int p
     if (!slot || !slot->pcm || !slot->sample_count) return -1;
 
     /* Stop any prior voice on this channel before reusing it. */
-    if (channel_voice[channel] >= 0)
-        of_mixer_stop(channel_voice[channel]);
+    if (channel_voice[channel] != OF_MIXER_HANDLE_INVALID)
+        stop_channel_voice(channel);
 
     /* Linear pitch bend around NORM_PITCH (=128).  Vanilla uses a log
      * steptable; linear is within a few cents at the ±16 range Doom
@@ -175,9 +226,18 @@ static int I_SDL_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep, int p
     if (pitch != NORM_PITCH && pitch > 0)
         rate = (rate * (uint32_t)pitch) / NORM_PITCH;
 
-    voice = of_mixer_play((const uint8_t *)slot->pcm, slot->sample_count,
-                          rate, SFX_PRIORITY, 200);
-    if (voice < 0) return -1;
+    voice = of_mixer_alloc_for_group_h(OF_MIXER_GROUP_SFX,
+                                       (const uint8_t *)slot->pcm,
+                                       slot->sample_count, rate,
+                                       SFX_PRIORITY, 200);
+    if (voice == OF_MIXER_HANDLE_INVALID && steal_one_sfx_voice())
+    {
+        voice = of_mixer_alloc_for_group_h(OF_MIXER_GROUP_SFX,
+                                           (const uint8_t *)slot->pcm,
+                                           slot->sample_count, rate,
+                                           SFX_PRIORITY, 200);
+    }
+    if (voice == OF_MIXER_HANDLE_INVALID) return -1;
 
     /* Hardware mixer may ignore the sample_rate arg in of_mixer_play and
      * default to output rate (48 kHz), which plays an 11025 Hz DMX sample
@@ -188,10 +248,10 @@ static int I_SDL_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep, int p
      * loop" sentinel, but passing -1 across the HW service ABI becomes
      * 0xFFFFFFFF and the mixer treats it as an infinite loop — the SFX
      * keeps playing forever.  Every voice starts as a one-shot from
-     * of_mixer_play, so leaving it alone is correct. */
-    of_mixer_set_rate(voice, (int)rate);
+     * the mixer allocator, so leaving it alone is correct. */
+    of_mixer_set_rate_h(voice, (int)rate);
 
-    of_mixer_set_group(voice, OF_MIXER_GROUP_SFX);
+    clear_voice_refs(voice);
     channel_voice[channel] = voice;
     set_params(voice, vol, sep);
     return channel;
@@ -200,22 +260,19 @@ static int I_SDL_StartSound(sfxinfo_t *sfx, int channel, int vol, int sep, int p
 static void I_SDL_StopSound(int channel)
 {
     if ((unsigned)channel >= NUM_CHANNELS) return;
-    if (channel_voice[channel] >= 0) {
-        of_mixer_stop(channel_voice[channel]);
-        channel_voice[channel] = -1;
-    }
+    stop_channel_voice(channel);
 }
 
 static boolean I_SDL_SoundIsPlaying(int channel)
 {
-    int v;
+    of_mixer_handle_t v;
     if ((unsigned)channel >= NUM_CHANNELS) return false;
     v = channel_voice[channel];
-    if (v < 0) return false;
-    if (!of_mixer_voice_active(v)) {
+    if (v == OF_MIXER_HANDLE_INVALID) return false;
+    if (!sfx_voice_owned(v)) {
         /* Voice finished on its own — clear the slot so StartSound
          * doesn't try to stop a voice the mixer has already recycled. */
-        channel_voice[channel] = -1;
+        channel_voice[channel] = OF_MIXER_HANDLE_INVALID;
         return false;
     }
     return true;

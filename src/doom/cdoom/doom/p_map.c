@@ -207,6 +207,23 @@ P_TeleportMove
 
 static void SpechitOverrun(line_t *ld);
 
+static void P_AddSpechit(line_t *ld)
+{
+    if (numspechit >= MAXSPECIALCROSS)
+    {
+        return;
+    }
+
+    spechit[numspechit] = ld;
+    numspechit++;
+
+    if (numspechit > MAXSPECIALCROSS_ORIGINAL
+     && (demoplayback || demorecording || netgame))
+    {
+        SpechitOverrun(ld);
+    }
+}
+
 //
 // PIT_CheckLine
 // Adjusts tmfloorz and tmceilingz as lines are contacted
@@ -264,14 +281,7 @@ boolean PIT_CheckLine (line_t* ld)
     // if contacted a special line, add it to the list
     if (ld->special)
     {
-        spechit[numspechit] = ld;
-	numspechit++;
-
-        // fraggle: spechits overrun emulation code from prboom-plus
-        if (numspechit > MAXSPECIALCROSS_ORIGINAL)
-        {
-            SpechitOverrun(ld);
-        }
+        P_AddSpechit(ld);
     }
 
     return true;
@@ -1450,4 +1460,3 @@ static void SpechitOverrun(line_t *ld)
             break;
     }
 }
-

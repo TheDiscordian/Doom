@@ -124,7 +124,7 @@ void R_DrawColumn (void)
     if (R_GPU_DrawColumn())
 	return;
 
-    R_GPU_PrepareForCPUAccess();
+    R_GPU_PrepareForCPUAccessRect(dc_x, dc_yl, 1, count + 1);
     R_Perf_CountCpuColumn((unsigned int)(count + 1));
 
     // Framebuffer destination address.
@@ -239,10 +239,9 @@ void R_DrawColumnLow (void)
     //	dccount++; 
 #endif 
 
-    R_GPU_PrepareForCPUAccess();
-
     // Blocky mode, need to multiply by 2.
     x = dc_x << 1;
+    R_GPU_PrepareForCPUAccessRect(x, dc_yl, 2, count + 1);
     
     dest = ylookup[dc_yl] + columnofs[x];
     dest2 = ylookup[dc_yl] + columnofs[x+1];
@@ -319,7 +318,14 @@ void R_DrawFuzzColumn (void)
     }
 #endif
 
-    R_GPU_PrepareForCPUAccess();
+    if (R_GPU_DrawFuzzColumnDirect(dc_x, dc_yl, dc_yh))
+    {
+        fuzzpos = (fuzzpos + count + 1) % FUZZTABLE;
+        return;
+    }
+
+    R_Perf_CountFuzzCpuColumn((unsigned int)(count + 1));
+    R_GPU_PrepareForCPUAccessRect(dc_x, dc_yl - 1, 1, count + 3);
     
     dest = ylookup[dc_yl] + columnofs[dc_x];
 
@@ -378,7 +384,15 @@ void R_DrawFuzzColumnLow (void)
     }
 #endif
 
-    R_GPU_PrepareForCPUAccess();
+    if (R_GPU_DrawFuzzColumnDirect(x, dc_yl, dc_yh) &&
+        R_GPU_DrawFuzzColumnDirect(x + 1, dc_yl, dc_yh))
+    {
+        fuzzpos = (fuzzpos + count + 1) % FUZZTABLE;
+        return;
+    }
+
+    R_Perf_CountFuzzCpuColumn((unsigned int)((count + 1) * 2));
+    R_GPU_PrepareForCPUAccessRect(x, dc_yl - 1, 2, count + 3);
     
     dest = ylookup[dc_yl] + columnofs[x];
     dest2 = ylookup[dc_yl] + columnofs[x+1];
@@ -442,7 +456,7 @@ void R_DrawTranslatedColumn (void)
     
 #endif 
 
-    R_GPU_PrepareForCPUAccess();
+    R_GPU_PrepareForCPUAccessRect(dc_x, dc_yl, 1, count + 1);
 
     dest = ylookup[dc_yl] + columnofs[dc_x]; 
 
@@ -492,7 +506,7 @@ void R_DrawTranslatedColumnLow (void)
     
 #endif 
 
-    R_GPU_PrepareForCPUAccess();
+    R_GPU_PrepareForCPUAccessRect(x, dc_yl, 2, count + 1);
 
     dest = ylookup[dc_yl] + columnofs[x]; 
     dest2 = ylookup[dc_yl] + columnofs[x+1]; 
@@ -611,7 +625,7 @@ void R_DrawSpan (void)
     if (R_GPU_DrawSpan())
 	return;
 
-    R_GPU_PrepareForCPUAccess();
+    R_GPU_PrepareForCPUAccessRect(ds_x1, ds_y, ds_x2 - ds_x1 + 1, 1);
     R_Perf_CountCpuSpan((unsigned int)(ds_x2 - ds_x1 + 1));
 
     // Pack position and step variables into a single 32-bit integer,

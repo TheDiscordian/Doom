@@ -1137,8 +1137,15 @@ typedef enum
     S_TECH2LAMP2,
     S_TECH2LAMP3,
     S_TECH2LAMP4,
-    NUMSTATES
+    NUMSTATES_VANILLA
 } statenum_t;
+
+/* DEHEXTRA: 3100 extra state slots, addressable by DEH "Frame N" sections
+ * where N >= NUMSTATES_VANILLA. Unpatched extras zero-init to a state that
+ * is functionally S_NULL (sprite TROO frame 0, tics 0, action NULL, next
+ * state = S_NULL = 0), so they're inert if walked accidentally. */
+#define DEHEXTRA_NUMSTATES 3100
+#define NUMSTATES (NUMSTATES_VANILLA + DEHEXTRA_NUMSTATES)
 
 
 typedef struct
@@ -1151,6 +1158,10 @@ typedef struct
     statenum_t nextstate;
     int misc1;
     int misc2;
+    /* MBF21: per-state parameters consumed by MBF21 codepointers
+     * (A_SpawnObject, A_MonsterProjectile, etc). Existing vanilla state
+     * initializers zero-init args[] via partial-initializer rule. */
+    int args[8];
 } state_t;
 
 extern state_t	states[NUMSTATES];
@@ -1294,9 +1305,17 @@ typedef enum {
     MT_MISC84,
     MT_MISC85,
     MT_MISC86,
-    NUMMOBJTYPES
+    NUMMOBJTYPES_VANILLA
 
 } mobjtype_t;
+
+/* DEHEXTRA: 14 extra mobjtype slots. Unpatched extras need doomednum=-1
+ * (zero-init would collide with map THINGS at doomednum=0); fixed up at
+ * runtime by DEH_InitExtra() before any DEH parsing. */
+#define DEHEXTRA_NUMMOBJTYPES 14
+#define NUMMOBJTYPES (NUMMOBJTYPES_VANILLA + DEHEXTRA_NUMMOBJTYPES)
+
+void DEH_InitExtra(void);
 
 typedef struct
 {

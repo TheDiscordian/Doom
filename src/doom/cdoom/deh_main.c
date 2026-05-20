@@ -383,7 +383,7 @@ int DEH_LoadFile(const char *filename)
     // defined, and shouldn't carry over to subsequent files as well.
     deh_allow_long_strings = false;
     deh_allow_long_cheats = false;
-    deh_allow_extended_strings = false;
+    deh_allow_extended_strings = true;
 
     printf(" loading %s\n", filename);
 
@@ -403,7 +403,8 @@ int DEH_LoadFile(const char *filename)
 
     if (had_error)
     {
-        I_Error("Error parsing dehacked file");
+        fprintf(stderr, "DEH_LoadFile: Error parsing %s\n", filename);
+        return 0;
     }
 
     return 1;
@@ -447,7 +448,7 @@ int DEH_LoadLump(int lumpnum, boolean allow_long, boolean allow_error)
     // Reset all special flags to defaults.
     deh_allow_long_strings = allow_long;
     deh_allow_long_cheats = allow_long;
-    deh_allow_extended_strings = false;
+    deh_allow_extended_strings = true;
 
     context = DEH_OpenLump(lumpnum);
 
@@ -516,4 +517,3 @@ void DEH_ParseCommandLine(void)
         }
     }
 }
-

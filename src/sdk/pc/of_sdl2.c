@@ -45,6 +45,11 @@ static uint32_t g_pixels[OF_SCREEN_W * OF_SCREEN_H];
 
 /* Callbacks */
 static void (*g_vsync_cb)(void);
+static uint32_t g_vblank_count;
+static uint32_t g_present_count;
+static uint32_t g_last_presented_idx;
+static uint64_t g_last_vblank_us;
+static uint64_t g_last_present_us;
 
 /* ---- Tile engine state ---- */
 static int      g_tile_enabled;
@@ -297,6 +302,12 @@ static void composite_and_present(void) {
     SDL_RenderCopy(g_renderer, g_texture, NULL, NULL);
     SDL_RenderPresent(g_renderer);
 
+    g_vblank_count++;
+    g_present_count++;
+    g_last_presented_idx = (uint32_t)g_draw_buf;
+    g_last_vblank_us = get_us() - g_start_us;
+    g_last_present_us = g_last_vblank_us;
+
     if (g_vsync_cb) g_vsync_cb();
 }
 
@@ -399,6 +410,36 @@ void of_video_set_color_mode(int mode) {
 
 void of_video_set_vsync_callback(void (*cb)(void)) {
     g_vsync_cb = cb;
+}
+
+void of_video_get_timing(of_video_timing_t *out) {
+    if (!out)
+        return;
+
+    out->vblank_count = g_vblank_count;
+    out->present_count = g_present_count;
+    out->last_presented_idx = g_last_presented_idx;
+    out->reserved = 0;
+    out->last_vblank_us = g_last_vblank_us;
+    out->last_flip_presented_us = g_last_present_us;
+}
+
+uint64_t of_video_last_vblank_us(void) {
+    of_video_timing_t timing;
+    of_video_get_timing(&timing);
+    return timing.last_vblank_us;
+}
+
+uint64_t of_video_last_flip_presented_us(void) {
+    of_video_timing_t timing;
+    of_video_get_timing(&timing);
+    return timing.last_flip_presented_us;
+}
+
+uint32_t of_video_vblank_count(void) {
+    of_video_timing_t timing;
+    of_video_get_timing(&timing);
+    return timing.vblank_count;
 }
 
 uint16_t *of_video_surface16(void) {

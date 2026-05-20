@@ -23,6 +23,7 @@
 #include "doomtype.h"
 #include "i_system.h"
 
+#define M_FIXED_NO_INLINE
 #include "m_fixed.h"
 
 
@@ -59,4 +60,3 @@ fixed_t FixedDiv(fixed_t a, fixed_t b)
 	return (fixed_t) result;
     }
 }
-

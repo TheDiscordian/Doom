@@ -21,19 +21,28 @@
 
 #include "doomdef.h"
 
+#include <stdint.h>
+
 #include "m_bbox.h"
 
 #include "i_system.h"
+#include "of_fastram.h"
 
 #include "r_main.h"
+#include "r_perf.h"
 #include "r_plane.h"
 #include "r_things.h"
 
 // State.
 #include "doomstat.h"
 #include "r_state.h"
+#include "z_zone.h"
+
+#include "tables.h"
 
 //#include "r_local.h"
+
+#define R_CACHE_ALIGNED __attribute__((aligned(64)))
 
 
 
@@ -43,8 +52,230 @@ line_t*		linedef;
 sector_t*	frontsector;
 sector_t*	backsector;
 
-drawseg_t	drawsegs[MAXDRAWSEGS];
+drawseg_t	drawsegs[MAXDRAWSEGS] R_CACHE_ALIGNED;
 drawseg_t*	ds_p;
+
+#define BBOX_ANGLE_CACHE_SIZE 4096
+
+typedef struct
+{
+    fixed_t x;
+    fixed_t y;
+    angle_t angle;
+    int validcount;
+} bbox_angle_cache_t;
+
+static bbox_angle_cache_t bbox_angle_cache[BBOX_ANGLE_CACHE_SIZE]
+    R_CACHE_ALIGNED;
+
+typedef struct
+{
+    fixed_t x;
+    fixed_t y;
+    fixed_t dx;
+    fixed_t dy;
+    fixed_t bbox[2][4];
+    unsigned short children[2];
+    unsigned short pad[6];
+} bsp_render_node_t;
+
+static bsp_render_node_t *bsp_render_nodes;
+
+void R_BuildBSPRenderData(void)
+{
+    byte *raw;
+
+    if (numnodes <= 0 || nodes == NULL)
+    {
+	bsp_render_nodes = NULL;
+	return;
+    }
+
+    raw = Z_Malloc(numnodes * sizeof(*bsp_render_nodes) + 63,
+		   PU_LEVEL, 0);
+    bsp_render_nodes = (bsp_render_node_t *)
+	(((uintptr_t)raw + 63u) & ~(uintptr_t)63u);
+
+    for (int i = 0; i < numnodes; i++)
+    {
+	node_t *src = &nodes[i];
+	bsp_render_node_t *dst = &bsp_render_nodes[i];
+
+	dst->x = src->x;
+	dst->y = src->y;
+	dst->dx = src->dx;
+	dst->dy = src->dy;
+	dst->children[0] = src->children[0];
+	dst->children[1] = src->children[1];
+
+	for (int side = 0; side < 2; side++)
+	{
+	    for (int k = 0; k < 4; k++)
+		dst->bbox[side][k] = src->bbox[side][k];
+	}
+    }
+}
+
+static inline fixed_t R_BspAbs(fixed_t value)
+{
+    return value < 0 ? -value : value;
+}
+
+static inline int R_BspSlopeDiv(unsigned int num, unsigned int den)
+{
+    unsigned int ans;
+
+    if (den < 512)
+	return SLOPERANGE;
+
+    ans = (num << 3) / (den >> 8);
+    return ans <= SLOPERANGE ? (int)ans : SLOPERANGE;
+}
+
+static inline int __attribute__((always_inline))
+R_PointOnSideBSP(const bsp_render_node_t *node)
+{
+    fixed_t dx;
+    fixed_t dy;
+    fixed_t left;
+    fixed_t right;
+
+    if (!node->dx)
+    {
+	if (viewx <= node->x)
+	    return node->dy > 0;
+
+	return node->dy < 0;
+    }
+
+    if (!node->dy)
+    {
+	if (viewy <= node->y)
+	    return node->dx < 0;
+
+	return node->dx > 0;
+    }
+
+    dx = viewx - node->x;
+    dy = viewy - node->y;
+
+    if ((node->dy ^ node->dx ^ dx ^ dy) & 0x80000000)
+    {
+	if ((node->dy ^ dx) & 0x80000000)
+	    return 1;
+	return 0;
+    }
+
+    left = FixedMul(node->dy >> FRACBITS, dx);
+    right = FixedMul(dy, node->dx >> FRACBITS);
+
+    return right >= left;
+}
+
+OF_FASTTEXT static angle_t R_PointToAngleBSP(fixed_t x, fixed_t y)
+{
+    x -= viewx;
+    y -= viewy;
+
+    if (!x && !y)
+	return 0;
+
+    if (x >= 0)
+    {
+	if (y >= 0)
+	{
+	    if (x > y)
+		return tantoangle[R_BspSlopeDiv(y, x)];
+	    return ANG90 - 1 - tantoangle[R_BspSlopeDiv(x, y)];
+	}
+
+	y = -y;
+	if (x > y)
+	    return -tantoangle[R_BspSlopeDiv(y, x)];
+	return ANG270 + tantoangle[R_BspSlopeDiv(x, y)];
+    }
+
+    x = -x;
+    if (y >= 0)
+    {
+	if (x > y)
+	    return ANG180 - 1 - tantoangle[R_BspSlopeDiv(y, x)];
+	return ANG90 + tantoangle[R_BspSlopeDiv(x, y)];
+    }
+
+    y = -y;
+    if (x > y)
+	return ANG180 + tantoangle[R_BspSlopeDiv(y, x)];
+    return ANG270 - 1 - tantoangle[R_BspSlopeDiv(x, y)];
+}
+
+static fixed_t R_PointToDistBSP(fixed_t x, fixed_t y)
+{
+    int angle;
+    fixed_t dx;
+    fixed_t dy;
+    fixed_t temp;
+    fixed_t frac;
+
+    dx = R_BspAbs(x - viewx);
+    dy = R_BspAbs(y - viewy);
+
+    if (dy > dx)
+    {
+	temp = dx;
+	dx = dy;
+	dy = temp;
+    }
+
+    frac = dx != 0 ? FixedDiv(dy, dx) : 0;
+    angle = (tantoangle[frac >> DBITS] + ANG90) >> ANGLETOFINESHIFT;
+
+    return FixedDiv(dx, finesine[angle]);
+}
+
+static angle_t R_VertexViewAngle(vertex_t *vertex)
+{
+    if (vertex->viewanglevalidcount != validcount)
+    {
+	vertex->viewangle = R_PointToAngleBSP(vertex->x, vertex->y);
+	vertex->viewanglevalidcount = validcount;
+    }
+
+    return vertex->viewangle;
+}
+
+OF_FASTTEXT fixed_t R_VertexViewDist(vertex_t *vertex)
+{
+    if (vertex->viewdistvalidcount != validcount)
+    {
+	vertex->viewdist = R_PointToDistBSP(vertex->x, vertex->y);
+	vertex->viewdistvalidcount = validcount;
+    }
+
+    return vertex->viewdist;
+}
+
+OF_FASTTEXT static angle_t R_BBoxPointAngle(fixed_t x, fixed_t y)
+{
+    unsigned int hash;
+    bbox_angle_cache_t *cache;
+
+    hash = ((unsigned int)x >> 4)
+         ^ ((unsigned int)x >> 16)
+         ^ ((unsigned int)y >> 7)
+         ^ ((unsigned int)y >> 19);
+    cache = &bbox_angle_cache[hash & (BBOX_ANGLE_CACHE_SIZE - 1)];
+
+    if (cache->validcount == validcount && cache->x == x && cache->y == y)
+	return cache->angle;
+
+    cache->x = x;
+    cache->y = y;
+    cache->angle = R_PointToAngleBSP(x, y);
+    cache->validcount = validcount;
+
+    return cache->angle;
+}
 
 
 void
@@ -88,7 +319,30 @@ typedef	struct
 
 // newend is one past the last valid seg
 cliprange_t*	newend;
-cliprange_t	solidsegs[MAXSEGS];
+cliprange_t	solidsegs[MAXSEGS] R_CACHE_ALIGNED;
+
+static int R_SolidSegsFull(void)
+{
+    return solidsegs[0].last >= viewwidth;
+}
+
+static cliprange_t *R_FindClipRange(int last)
+{
+    cliprange_t *lo = solidsegs;
+    cliprange_t *hi = newend;
+
+    while (lo < hi)
+    {
+	cliprange_t *mid = lo + ((hi - lo) >> 1);
+
+	if (mid->last < last)
+	    lo = mid + 1;
+	else
+	    hi = mid;
+    }
+
+    return lo;
+}
 
 
 
@@ -99,7 +353,7 @@ cliprange_t	solidsegs[MAXSEGS];
 //  e.g. single sided LineDefs (middle texture)
 //  that entirely block the view.
 // 
-void
+OF_FASTTEXT void
 R_ClipSolidWallSegment
 ( int			first,
   int			last )
@@ -109,9 +363,7 @@ R_ClipSolidWallSegment
 
     // Find the first range that touches the range
     //  (adjacent pixels are touching).
-    start = solidsegs;
-    while (start->last < first-1)
-	start++;
+    start = R_FindClipRange(first - 1);
 
     if (first < start->first)
     {
@@ -120,6 +372,9 @@ R_ClipSolidWallSegment
 	    // Post is entirely visible (above start),
 	    //  so insert a new clippost.
 	    R_StoreWallRange (first, last);
+	    if (newend >= &solidsegs[MAXSEGS])
+		return;
+
 	    next = newend;
 	    newend++;
 	    
@@ -174,13 +429,15 @@ R_ClipSolidWallSegment
     }
     
 
-    while (next++ != newend)
     {
-	// Remove a post.
-	*++start = *next;
-    }
+	cliprange_t *dst = start + 1;
+	cliprange_t *src = next + 1;
 
-    newend = start+1;
+	while (src < newend)
+	    *dst++ = *src++;
+
+	newend = dst;
+    }
 }
 
 
@@ -192,7 +449,7 @@ R_ClipSolidWallSegment
 // Does handle windows,
 //  e.g. LineDefs with upper and lower texture.
 //
-void
+OF_FASTTEXT void
 R_ClipPassWallSegment
 ( int	first,
   int	last )
@@ -201,9 +458,7 @@ R_ClipPassWallSegment
 
     // Find the first range that touches the range
     //  (adjacent pixels are touching).
-    start = solidsegs;
-    while (start->last < first-1)
-	start++;
+    start = R_FindClipRange(first - 1);
 
     if (first < start->first)
     {
@@ -255,7 +510,7 @@ void R_ClearClipSegs (void)
 // Clips the given segment
 // and adds any visible pieces to the line list.
 //
-void R_AddLine (seg_t*	line)
+OF_FASTTEXT void R_AddLine (seg_t*	line)
 {
     int			x1;
     int			x2;
@@ -263,12 +518,29 @@ void R_AddLine (seg_t*	line)
     angle_t		angle2;
     angle_t		span;
     angle_t		tspan;
+    unsigned int        perf_start;
+
+    perf_start = R_PERF_DETAIL_BEGIN();
     
     curline = line;
+    backsector = line->backsector;
+
+    if (backsector
+	&& backsector->ceilingheight > frontsector->floorheight
+	&& backsector->floorheight < frontsector->ceilingheight
+	&& backsector->ceilingheight == frontsector->ceilingheight
+	&& backsector->floorheight == frontsector->floorheight
+	&& backsector->ceilingpic == frontsector->ceilingpic
+	&& backsector->floorpic == frontsector->floorpic
+	&& backsector->lightlevel == frontsector->lightlevel
+	&& line->sidedef->midtexture == 0)
+    {
+	goto done;
+    }
 
     // OPTIMIZE: quickly reject orthogonal back sides.
-    angle1 = R_PointToAngle (line->v1->x, line->v1->y);
-    angle2 = R_PointToAngle (line->v2->x, line->v2->y);
+    angle1 = R_VertexViewAngle(line->v1);
+    angle2 = R_VertexViewAngle(line->v2);
     
     // Clip to view edges.
     // OPTIMIZE: make constant out of 2*clipangle (FIELDOFVIEW).
@@ -276,7 +548,7 @@ void R_AddLine (seg_t*	line)
     
     // Back side? I.e. backface culling?
     if (span >= ANG180)
-	return;		
+	goto done;
 
     // Global angle needed by segcalc.
     rw_angle1 = angle1;
@@ -290,7 +562,7 @@ void R_AddLine (seg_t*	line)
 
 	// Totally off the left edge?
 	if (tspan >= span)
-	    return;
+	    goto done;
 	
 	angle1 = clipangle;
     }
@@ -301,7 +573,7 @@ void R_AddLine (seg_t*	line)
 
 	// Totally off the left edge?
 	if (tspan >= span)
-	    return;	
+	    goto done;
 	angle2 = -clipangle;
     }
     
@@ -312,12 +584,11 @@ void R_AddLine (seg_t*	line)
     x1 = viewangletox[angle1];
     x2 = viewangletox[angle2];
 
-    // Does not cross a pixel?
-    if (x1 == x2)
-	return;				
+    // Does not cross a pixel.  Interpolated views can quantize a near-edge
+    // seg to an empty/reversed screen span; do not pass that to clipping.
+    if (x1 >= x2)
+	goto done;
 	
-    backsector = line->backsector;
-
     // Single sided line?
     if (!backsector)
 	goto clipsolid;		
@@ -342,16 +613,19 @@ void R_AddLine (seg_t*	line)
 	&& backsector->lightlevel == frontsector->lightlevel
 	&& curline->sidedef->midtexture == 0)
     {
-	return;
+	goto done;
     }
     
 				
   clippass:
     R_ClipPassWallSegment (x1, x2-1);	
-    return;
+    goto done;
 		
   clipsolid:
     R_ClipSolidWallSegment (x1, x2-1);
+
+  done:
+    R_PERF_DETAIL_END(R_PERF_DETAIL_BSP_ADD_LINE, perf_start);
 }
 
 
@@ -377,7 +651,7 @@ int	checkcoord[12][4] =
 };
 
 
-boolean R_CheckBBox (fixed_t*	bspcoord)
+OF_FASTTEXT boolean R_CheckBBox (fixed_t*	bspcoord)
 {
     int			boxx;
     int			boxy;
@@ -397,6 +671,10 @@ boolean R_CheckBBox (fixed_t*	bspcoord)
 
     int			sx1;
     int			sx2;
+    boolean             result;
+    unsigned int        perf_start;
+
+    perf_start = R_PERF_DETAIL_BEGIN();
     
     // Find the corners of the box
     // that define the edges from current viewpoint.
@@ -416,7 +694,10 @@ boolean R_CheckBBox (fixed_t*	bspcoord)
 		
     boxpos = (boxy<<2)+boxx;
     if (boxpos == 5)
-	return true;
+    {
+	result = true;
+	goto done;
+    }
 	
     x1 = bspcoord[checkcoord[boxpos][0]];
     y1 = bspcoord[checkcoord[boxpos][1]];
@@ -424,14 +705,17 @@ boolean R_CheckBBox (fixed_t*	bspcoord)
     y2 = bspcoord[checkcoord[boxpos][3]];
     
     // check clip list for an open space
-    angle1 = R_PointToAngle (x1, y1) - viewangle;
-    angle2 = R_PointToAngle (x2, y2) - viewangle;
+    angle1 = R_BBoxPointAngle (x1, y1) - viewangle;
+    angle2 = R_BBoxPointAngle (x2, y2) - viewangle;
 	
     span = angle1 - angle2;
 
     // Sitting on a line?
     if (span >= ANG180)
-	return true;
+    {
+	result = true;
+	goto done;
+    }
     
     tspan = angle1 + clipangle;
 
@@ -441,7 +725,10 @@ boolean R_CheckBBox (fixed_t*	bspcoord)
 
 	// Totally off the left edge?
 	if (tspan >= span)
-	    return false;	
+	{
+	    result = false;
+	    goto done;
+	}
 
 	angle1 = clipangle;
     }
@@ -452,7 +739,10 @@ boolean R_CheckBBox (fixed_t*	bspcoord)
 
 	// Totally off the left edge?
 	if (tspan >= span)
-	    return false;
+	{
+	    result = false;
+	    goto done;
+	}
 	
 	angle2 = -clipangle;
     }
@@ -466,23 +756,30 @@ boolean R_CheckBBox (fixed_t*	bspcoord)
     sx1 = viewangletox[angle1];
     sx2 = viewangletox[angle2];
 
-    // Does not cross a pixel.
+    // Does not cross a pixel.  Vanilla only rejects equal endpoints here;
+    // wrapped/reversed bbox spans still need the normal clip-list test.
     if (sx1 == sx2)
-	return false;			
+    {
+	result = false;
+	goto done;
+    }
     sx2--;
 	
-    start = solidsegs;
-    while (start->last < sx2)
-	start++;
+    start = R_FindClipRange(sx2);
     
     if (sx1 >= start->first
 	&& sx2 <= start->last)
     {
 	// The clippost contains the new span.
-	return false;
+	result = false;
+	goto done;
     }
 
-    return true;
+    result = true;
+
+  done:
+    R_PERF_DETAIL_END(R_PERF_DETAIL_BSP_CHECK_BBOX, perf_start);
+    return result;
 }
 
 
@@ -493,11 +790,14 @@ boolean R_CheckBBox (fixed_t*	bspcoord)
 // Add sprites of things in sector.
 // Draw one or more line segments.
 //
-void R_Subsector (int num)
+OF_FASTTEXT void R_Subsector (int num)
 {
     int			count;
     seg_t*		line;
     subsector_t*	sub;
+    unsigned int        perf_start;
+
+    perf_start = R_PERF_DETAIL_BEGIN();
 	
 #ifdef RANGECHECK
     if (num>=numsubsectors)
@@ -542,6 +842,8 @@ void R_Subsector (int num)
     // check for solidsegs overflow - extremely unsatisfactory!
     if (newend > &solidsegs[MAXSEGS])
         I_Error("R_Subsector: solidsegs overflow\n");
+
+    R_PERF_DETAIL_END(R_PERF_DETAIL_BSP_SUBSECTOR, perf_start);
 }
 
 
@@ -552,31 +854,96 @@ void R_Subsector (int num)
 // Renders all subsectors below a given node,
 //  traversing subtree recursively.
 // Just call with BSP root.
-void R_RenderBSPNode (int bspnum)
-{
-    node_t*	bsp;
-    int		side;
+//
+#define BSP_STACK_MAX 128
 
-    // Found a subsector?
-    if (bspnum & NF_SUBSECTOR)
+typedef struct
+{
+    int backchild;
+    fixed_t *backbbox;
+} bsp_stack_t;
+
+OF_FASTTEXT void R_RenderBSPNode (int bspnum)
+{
+    bsp_render_node_t*	bsp;
+    int		side;
+    int		frontchild;
+    int		backchild;
+    bsp_stack_t	stack[BSP_STACK_MAX];
+    int		stack_top = 0;
+    int		found_back;
+
+    if (bsp_render_nodes == NULL && numnodes > 0)
+	R_BuildBSPRenderData();
+
+    for (;;)
     {
-	if (bspnum == -1)			
+	if (R_SolidSegsFull())
+	    return;
+
+	while (!(bspnum & NF_SUBSECTOR))
+	{
+	    if (R_SolidSegsFull())
+		return;
+
+	    R_PERF_DETAIL_COUNT(R_PERF_DETAIL_BSP_NODE);
+
+	    bsp = &bsp_render_nodes[bspnum];
+
+	    // Decide which side the view point is on.
+	    side = R_PointOnSideBSP(bsp);
+	    frontchild = bsp->children[side];
+	    backchild = bsp->children[side^1];
+
+	    // Render front space first.  The back-child bbox must be checked
+	    // after front space updates solidsegs, so keep the parent pending.
+	    if (stack_top == BSP_STACK_MAX)
+	    {
+		R_RenderBSPNode (frontchild);
+		if (R_CheckBBox (bsp->bbox[side^1]))
+		{
+		    bspnum = backchild;
+		    continue;
+		}
+		goto pop_back_child;
+	    }
+
+	    stack[stack_top].backchild = backchild;
+	    stack[stack_top].backbbox = bsp->bbox[side^1];
+	    stack_top++;
+	    bspnum = frontchild;
+	}
+
+	R_PERF_DETAIL_COUNT(R_PERF_DETAIL_BSP_NODE);
+
+	// Found a subsector.
+	if (bspnum == -1)
 	    R_Subsector (0);
 	else
 	    R_Subsector (bspnum&(~NF_SUBSECTOR));
-	return;
+
+	if (R_SolidSegsFull())
+	    return;
+
+      pop_back_child:
+	found_back = 0;
+	while (stack_top > 0)
+	{
+	    bsp_stack_t *entry;
+
+	    stack_top--;
+	    entry = &stack[stack_top];
+
+	    // Possibly divide back space.
+	    if (R_CheckBBox (entry->backbbox))
+	    {
+		bspnum = entry->backchild;
+		found_back = 1;
+		break;
+	    }
+	}
+
+	if (!found_back)
+	    return;
     }
-		
-    bsp = &nodes[bspnum];
-    
-    // Decide which side the view point is on.
-    side = R_PointOnSide (viewx, viewy, bsp);
-
-    // Recursively divide front space.
-    R_RenderBSPNode (bsp->children[side]); 
-
-    // Possibly divide back space.
-    if (R_CheckBBox (bsp->bbox[side^1]))	
-	R_RenderBSPNode (bsp->children[side^1]);
 }
-

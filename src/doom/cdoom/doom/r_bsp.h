@@ -53,7 +53,9 @@ typedef void (*drawfunc_t) (int start, int stop);
 // BSP?
 void R_ClearClipSegs (void);
 void R_ClearDrawSegs (void);
+void R_BuildBSPRenderData (void);
 
+fixed_t R_VertexViewDist(vertex_t *vertex);
 
 void R_RenderBSPNode (int bspnum);
 

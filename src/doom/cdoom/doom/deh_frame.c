@@ -17,6 +17,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <strings.h>
 
 #include "doomtype.h"
 #include "d_items.h"
@@ -34,6 +35,15 @@ DEH_BEGIN_MAPPING(state_mapping, state_t)
   DEH_MAPPING("Next frame",       nextstate)
   DEH_MAPPING("Unknown 1",        misc1)
   DEH_MAPPING("Unknown 2",        misc2)
+  /* MBF21 per-state args, consumed by MBF21 codepointers. */
+  DEH_MAPPING("Args1",            args[0])
+  DEH_MAPPING("Args2",            args[1])
+  DEH_MAPPING("Args3",            args[2])
+  DEH_MAPPING("Args4",            args[3])
+  DEH_MAPPING("Args5",            args[4])
+  DEH_MAPPING("Args6",            args[5])
+  DEH_MAPPING("Args7",            args[6])
+  DEH_MAPPING("Args8",            args[7])
   DEH_UNSUPPORTED_MAPPING("Codep frame")
 DEH_END_MAPPING
 
@@ -127,7 +137,10 @@ static void DEH_FrameParseLine(deh_context_t *context, char *line, void *tag)
 
     ivalue = atoi(value);
     
-    if (state == &states[NUMSTATES - 1])
+    /* The Batman overflow simulation must trigger on the vanilla last
+     * frame (states[966]), not states[NUMSTATES-1] - with DEHEXTRA that
+     * would be states[4066], a frame Batman doesn't touch. */
+    if (state == &states[DEH_VANILLA_NUMSTATES])
     {
         DEH_FrameOverflow(context, variable_name, ivalue);
     }
@@ -158,4 +171,3 @@ deh_section_t deh_section_frame =
     NULL,
     DEH_FrameSHA1Sum,
 };
-

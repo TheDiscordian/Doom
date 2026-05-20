@@ -4660,3 +4660,14 @@ mobjinfo_t mobjinfo[NUMMOBJTYPES] = {
     }
 };
 
+/* DEHEXTRA: mark the 14 mobjinfo[] extras as unspawnable so map THINGS
+ * with doomednum 0 don't accidentally pick them. Extra states[] entries
+ * zero-init fine (sprite TROO frame 0, action NULL, nextstate S_NULL). */
+void DEH_InitExtra(void)
+{
+    for (int i = NUMMOBJTYPES_VANILLA; i < NUMMOBJTYPES; i++)
+    {
+        mobjinfo[i].doomednum = -1;
+    }
+}
+

@@ -75,7 +75,7 @@ typedef struct
 
 
 
-#define MAXANIMS                32
+#define MAXANIMS                64
 
 
 //
@@ -131,7 +131,7 @@ anim_t*		lastanim;
 //
 //      Animating line specials
 //
-#define MAXLINEANIMS            64
+#define MAXLINEANIMS            256
 
 short numlinespecials;
 line_t *linespeciallist[MAXLINEANIMS];
@@ -151,6 +151,9 @@ void P_InitPicAnims (void)
 
         startname = DEH_String(animdefs[i].startname);
         endname = DEH_String(animdefs[i].endname);
+
+	if (lastanim == &anims[MAXANIMS])
+	    I_Error("P_InitPicAnims: too many animated textures/flats");
 
 	if (animdefs[i].istexture)
 	{
@@ -317,13 +320,6 @@ fixed_t	P_FindHighestFloorSurrounding(sector_t *sec)
 //
 // P_FindNextHighestFloor
 // FIND NEXT HIGHEST FLOOR IN SURROUNDING SECTORS
-// Note: this should be doable w/o a fixed array.
-
-// Thanks to entryway for the Vanilla overflow emulation.
-
-// 20 adjoining sectors max!
-#define MAX_ADJOINING_SECTORS     20
-
 fixed_t
 P_FindNextHighestFloor
 ( sector_t* sec,
@@ -335,7 +331,15 @@ P_FindNextHighestFloor
     line_t*     check;
     sector_t*   other;
     fixed_t     height = currentheight;
-    fixed_t     heightlist[MAX_ADJOINING_SECTORS + 2];
+    fixed_t*    heightlist;
+
+    if (sec->linecount <= 0)
+    {
+        return currentheight;
+    }
+
+    heightlist = Z_Malloc(sec->linecount * sizeof(*heightlist),
+                          PU_STATIC, NULL);
 
     for (i=0, h=0; i < sec->linecount; i++)
     {
@@ -347,18 +351,6 @@ P_FindNextHighestFloor
         
         if (other->floorheight > height)
         {
-            // Emulation of memory (stack) overflow
-            if (h == MAX_ADJOINING_SECTORS + 1)
-            {
-                height = other->floorheight;
-            }
-            else if (h == MAX_ADJOINING_SECTORS + 2)
-            {
-                // Fatal overflow: game crashes at 22 sectors
-                I_Error("Sector with more than 22 adjoining sectors. "
-                        "Vanilla will crash here");
-            }
-
             heightlist[h++] = other->floorheight;
         }
     }
@@ -366,6 +358,7 @@ P_FindNextHighestFloor
     // Find lowest height in list
     if (!h)
     {
+        Z_Free(heightlist);
         return currentheight;
     }
         
@@ -380,6 +373,7 @@ P_FindNextHighestFloor
         }
     }
 
+    Z_Free(heightlist);
     return min;
 }
 

@@ -71,6 +71,9 @@ extern  boolean setsizeneeded;
 extern lighttable_t*	scalelight[LIGHTLEVELS][MAXLIGHTSCALE];
 extern lighttable_t*	scalelightfixed[MAXLIGHTSCALE];
 extern lighttable_t*	zlight[LIGHTLEVELS][MAXLIGHTZ];
+extern byte		scalelightrow[LIGHTLEVELS][MAXLIGHTSCALE];
+extern byte		scalelightfixedrow[MAXLIGHTSCALE];
+extern byte		zlightrow[LIGHTLEVELS][MAXLIGHTZ];
 
 extern int		extralight;
 extern lighttable_t*	fixedcolormap;
@@ -94,7 +97,8 @@ extern	int		detailshift;
 // "draw the previous tic", not "fall back to current state".
 //
 // r_interpolate is disabled and fractionaltic is forced to 0 for demo
-// playback/recording, netgames, and -singletics to keep those bit-exact.
+// recording, netgames, and -singletics to keep those bit-exact. Playback
+// uses interpolation because it only affects the rendered view.
 extern boolean crispy_uncapped;
 extern boolean r_interpolate;
 extern fixed_t fractionaltic;

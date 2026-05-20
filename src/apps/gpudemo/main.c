@@ -4,13 +4,15 @@
  * Showcases every GPU feature:
  *   Mode 0 — Wolfenstein-style raycaster maze with an auto-walking
  *            camera (right-hand wall follower). Wall columns use
- *            OF_GPU_SPAN_COLUMN, floor and ceiling use horizontal
+ *            strided affine spans, floor and ceiling use horizontal
  *            spans, both colormap-lit.
- *   Mode 1 — Rotating 3D cube via the hardware triangle rasteriser
- *   Mode 2 — Perspective-correct textured triangle (software rasterised,
+ *   Mode 1 — Perspective-correct textured triangle (software rasterised,
  *            using SPAN_PERSP horizontal scanlines for the inner loop —
  *            the GPU does the 1/z reciprocal + multiply per 16-pixel
  *            sub-segment in hardware)
+ *
+ * The old hardware triangle demo is left in the file for FULL GPU targets,
+ * but the Pocket LITE build does not expose that path in the mode cycle.
  *
  * Controls:
  *   A button — cycle through demo modes
@@ -164,7 +166,7 @@ static void set_palette(void) {
  * ================================================================
  * Map is a 16x16 grid ('#' = wall, '.' = empty). For each screen column
  * we cast a ray through the grid with DDA, find the nearest wall hit,
- * and draw a textured vertical OF_GPU_SPAN_COLUMN for the visible slice.
+ * and draw a textured vertical strided span for the visible slice.
  * Floor and ceiling are filled with horizontal spans using the standard
  * "row distance" floor cast (linear in screen y). Both paths feed the
  * same colormap-lit fragment processor.
@@ -249,8 +251,10 @@ static int _flicker_256;
 static inline int sample_light(float wx, float wy) {
     int gx = (int)(wx * LGRID_SCALE);
     int gy = (int)(wy * LGRID_SCALE);
-    if (gx < 0) gx = 0; if (gx >= LGRID_SIZE) gx = LGRID_SIZE - 1;
-    if (gy < 0) gy = 0; if (gy >= LGRID_SIZE) gy = LGRID_SIZE - 1;
+    if (gx < 0) gx = 0;
+    if (gx >= LGRID_SIZE) gx = LGRID_SIZE - 1;
+    if (gy < 0) gy = 0;
+    if (gy >= LGRID_SIZE) gy = LGRID_SIZE - 1;
     return (light_grid[gy][gx] * _flicker_256) >> 8;
 }
 
@@ -519,7 +523,7 @@ static void draw_maze_demo(int frame) {
             .tstep     = tstep,
             .count     = span_count,
             .light     = light,
-            .flags     = OF_GPU_SPAN_COLORMAP | OF_GPU_SPAN_COLUMN,
+            .flags     = OF_GPU_SPAN_COLORMAP,
             .fb_stride = SCREEN_W,
             .tex_width = 64,
         };
@@ -553,7 +557,7 @@ static const uint8_t face_colors[6] = { 0xC0, 0xA0, 0x80, 0xE0, 0x60, 0xB0 };
  * Heap-allocated (in SDRAM) at startup, just like the other textures. */
 static uint8_t *face_tex;
 
-static void draw_triangle_demo(int frame) {
+static void __attribute__((unused)) draw_triangle_demo(int frame) {
     uint8_t *fb = of_video_surface();
 
     prepare_fb(fb, 0x08);
@@ -602,8 +606,6 @@ static void draw_triangle_demo(int frame) {
         of_gpu_texture_t solid_tex = {
             .addr = (uint32_t)(uintptr_t)&face_tex[f / 2],
             .width = 1, .height = 1,
-            .format = OF_GPU_TEXFMT_I8,
-            .wrap_s = OF_GPU_WRAP_REPEAT, .wrap_t = OF_GPU_WRAP_REPEAT,
         };
         of_gpu_bind_texture(&solid_tex);
 
@@ -827,7 +829,7 @@ int main(void) {
     of_gpu_init();
     printf("[gpudemo] gpu_init ok\n");
 
-    of_gpu_colormap_upload(colormap, sizeof(colormap));
+    of_gpu_palookup_upload(0, colormap, sizeof(colormap));
     printf("[gpudemo] colormap uploaded\n");
 
     {
@@ -846,8 +848,6 @@ int main(void) {
      * rotating cube in draw_triangle_demo() is skipped on this target. */
     int mode = 0;
     int frame = 0;
-    int auto_switch_at = 600;  /* swap modes every ~10s */
-
     /* CPU% vs GPU% is computed from _stat_cpu_us / _stat_gpu_us, which
      * the draw functions update internally. No timing or finish calls
      * here — the original pipeline ordering (finish inside draw, then

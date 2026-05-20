@@ -21,6 +21,8 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
 
 #include "i_system.h"
 #include "z_zone.h"
@@ -28,11 +30,14 @@
 
 #include "doomdef.h"
 #include "doomstat.h"
+#include "of_fastram.h"
 
 #include "r_local.h"
 #include "r_gpu.h"
+#include "r_perf.h"
 #include "r_sky.h"
 
+#define R_CACHE_ALIGNED __attribute__((aligned(64)))
 
 
 planefunction_t		floorfunc;
@@ -44,14 +49,17 @@ planefunction_t		ceilingfunc;
 
 // Here comes the obnoxious "visplane".
 #define MAXVISPLANES	1024
-visplane_t		visplanes[MAXVISPLANES];
+#define VISPLANE_HASH_SIZE 256
+visplane_t		visplanes[MAXVISPLANES] R_CACHE_ALIGNED;
 visplane_t*		lastvisplane;
 visplane_t*		floorplane;
 visplane_t*		ceilingplane;
+static visplane_t*	visplane_hash[VISPLANE_HASH_SIZE] R_CACHE_ALIGNED;
+static visplane_t*	visplane_next[MAXVISPLANES] R_CACHE_ALIGNED;
 
 // ?
 #define MAXOPENINGS	(SCREENWIDTH*256)
-short			openings[MAXOPENINGS];
+short			openings[MAXOPENINGS] R_CACHE_ALIGNED;
 short*			lastopening;
 
 
@@ -60,33 +68,85 @@ short*			lastopening;
 //  floorclip starts out SCREENHEIGHT
 //  ceilingclip starts out -1
 //
-short			floorclip[SCREENWIDTH];
-short			ceilingclip[SCREENWIDTH];
+short			floorclip[SCREENWIDTH] R_CACHE_ALIGNED;
+short			ceilingclip[SCREENWIDTH] R_CACHE_ALIGNED;
 
 //
 // spanstart holds the start of a plane span
 // initialized to 0 at start
 //
-int			spanstart[SCREENHEIGHT];
-int			spanstop[SCREENHEIGHT];
+int			spanstart[SCREENHEIGHT] R_CACHE_ALIGNED;
+int			spanstop[SCREENHEIGHT] R_CACHE_ALIGNED;
 
 //
 // texture mapping
 //
 lighttable_t**		planezlight;
+byte*			planezlightrow;
 fixed_t			planeheight;
 
-fixed_t			yslope[SCREENHEIGHT];
-fixed_t			distscale[SCREENWIDTH];
+fixed_t			yslope[SCREENHEIGHT] R_CACHE_ALIGNED;
+fixed_t			distscale[SCREENWIDTH] R_CACHE_ALIGNED;
 fixed_t			basexscale;
 fixed_t			baseyscale;
 
-fixed_t			cachedheight[SCREENHEIGHT];
-fixed_t			cacheddistance[SCREENHEIGHT];
-fixed_t			cachedxstep[SCREENHEIGHT];
-fixed_t			cachedystep[SCREENHEIGHT];
+fixed_t			cachedheight[SCREENHEIGHT] R_CACHE_ALIGNED;
+fixed_t			cacheddistance[SCREENHEIGHT] R_CACHE_ALIGNED;
+fixed_t			cachedxstep[SCREENHEIGHT] R_CACHE_ALIGNED;
+fixed_t			cachedystep[SCREENHEIGHT] R_CACHE_ALIGNED;
+unsigned		cachedlightindex[SCREENHEIGHT] R_CACHE_ALIGNED;
 
+static unsigned int R_VisplaneHash(fixed_t height, int picnum, int lightlevel)
+{
+    unsigned int hash = (unsigned int)height;
 
+    hash ^= hash >> 16;
+    hash ^= (unsigned int)picnum * 131u;
+    hash ^= (unsigned int)lightlevel * 17u;
+
+    return hash & (VISPLANE_HASH_SIZE - 1);
+}
+
+static void R_LinkVisplane(visplane_t *plane)
+{
+    int index = plane - visplanes;
+    unsigned int hash = R_VisplaneHash(plane->height,
+                                       plane->picnum,
+                                       plane->lightlevel);
+
+    visplane_next[index] = visplane_hash[hash];
+    visplane_hash[hash] = plane;
+}
+
+static boolean R_PlaneRangeIsOpen(const byte *top, int start, int stop)
+{
+    const byte *p = top + start;
+    int count = stop - start + 1;
+
+    while (count > 0 && (((uintptr_t)p) & 3u))
+    {
+	if (*p++ != 0xff)
+	    return false;
+	count--;
+    }
+
+    while (count >= 4)
+    {
+	if (*(const uint32_t *)p != 0xffffffffu)
+	    return false;
+
+	p += 4;
+	count -= 4;
+    }
+
+    while (count-- > 0)
+    {
+	if (*p++ != 0xff)
+	    return false;
+    }
+
+    return true;
+}
 
 //
 // R_InitPlanes
@@ -111,7 +171,7 @@ void R_InitPlanes (void)
 //
 // BASIC PRIMITIVE
 //
-void
+OF_FASTTEXT void
 R_MapPlane
 ( int		y,
   int		x1,
@@ -120,7 +180,16 @@ R_MapPlane
     angle_t	angle;
     fixed_t	distance;
     fixed_t	length;
+    fixed_t	xfrac;
+    fixed_t	yfrac;
+    fixed_t	xstep;
+    fixed_t	ystep;
     unsigned	index;
+    int		gpu_light;
+    lighttable_t* colormap;
+    unsigned int perf_start;
+
+    perf_start = R_PERF_DETAIL_BEGIN();
 	
 #ifdef RANGECHECK
     if (x2 < x1
@@ -136,39 +205,70 @@ R_MapPlane
     {
 	cachedheight[y] = planeheight;
 	distance = cacheddistance[y] = FixedMul (planeheight, yslope[y]);
-	ds_xstep = cachedxstep[y] = FixedMul (distance,basexscale);
-	ds_ystep = cachedystep[y] = FixedMul (distance,baseyscale);
+	xstep = cachedxstep[y] = FixedMul (distance,basexscale);
+	ystep = cachedystep[y] = FixedMul (distance,baseyscale);
+	index = distance >> LIGHTZSHIFT;
+	if (index >= MAXLIGHTZ )
+	    index = MAXLIGHTZ-1;
+	cachedlightindex[y] = index;
     }
     else
     {
 	distance = cacheddistance[y];
-	ds_xstep = cachedxstep[y];
-	ds_ystep = cachedystep[y];
+	xstep = cachedxstep[y];
+	ystep = cachedystep[y];
+	index = cachedlightindex[y];
     }
-	
+
     length = FixedMul (distance,distscale[x1]);
     angle = (viewangle + xtoviewangle[x1])>>ANGLETOFINESHIFT;
-    ds_xfrac = viewx + FixedMul(finecosine[angle], length);
-    ds_yfrac = -viewy - FixedMul(finesine[angle], length);
+    xfrac = viewx + FixedMul(finecosine[angle], length);
+    yfrac = -viewy - FixedMul(finesine[angle], length);
 
     if (fixedcolormap)
-	ds_colormap = fixedcolormap;
+    {
+	colormap = fixedcolormap;
+	gpu_light = -1;
+    }
     else
     {
-	index = distance >> LIGHTZSHIFT;
-	
-	if (index >= MAXLIGHTZ )
-	    index = MAXLIGHTZ-1;
-
-	ds_colormap = planezlight[index];
+	colormap = planezlight[index];
+	gpu_light = planezlightrow[index];
     }
-	
+
+    if (spanfunc == R_DrawSpan)
+    {
+	if (gpu_light >= 0)
+	{
+	    if (R_GPU_DrawSpanLightDirect(y, x1, x2, ds_source,
+					  xfrac, yfrac, xstep, ystep,
+					  gpu_light))
+	    {
+		goto done;
+	    }
+	}
+	else if (R_GPU_DrawSpanDirect(y, x1, x2, ds_source,
+				      xfrac, yfrac, xstep, ystep,
+				      (const byte *)colormap))
+	{
+	    goto done;
+	}
+    }
+
     ds_y = y;
     ds_x1 = x1;
     ds_x2 = x2;
+    ds_xfrac = xfrac;
+    ds_yfrac = yfrac;
+    ds_xstep = xstep;
+    ds_ystep = ystep;
+    ds_colormap = colormap;
 
     // high or low detail
-    spanfunc ();	
+    spanfunc ();
+
+  done:
+    R_PERF_DETAIL_END(R_PERF_DETAIL_PLANE_MAP, perf_start);
 }
 
 
@@ -190,9 +290,10 @@ void R_ClearPlanes (void)
 
     lastvisplane = visplanes;
     lastopening = openings;
+    memset(visplane_hash, 0, sizeof(visplane_hash));
     
     // texture calculation
-    memset (cachedheight, 0, sizeof(cachedheight));
+    memset (cachedheight, 0xff, sizeof(cachedheight));
 
     // left to right mapping
     angle = (viewangle-ANG90)>>ANGLETOFINESHIFT;
@@ -215,6 +316,11 @@ R_FindPlane
   int		lightlevel )
 {
     visplane_t*	check;
+    visplane_t* result;
+    unsigned int hash;
+    unsigned int perf_start;
+
+    perf_start = R_PERF_DETAIL_BEGIN();
 	
     if (picnum == skyflatnum)
     {
@@ -222,7 +328,9 @@ R_FindPlane
 	lightlevel = 0;
     }
 	
-    for (check=visplanes; check<lastvisplane; check++)
+    hash = R_VisplaneHash(height, picnum, lightlevel);
+    for (check = visplane_hash[hash]; check != NULL;
+	 check = visplane_next[check - visplanes])
     {
 	if (height == check->height
 	    && picnum == check->picnum
@@ -233,13 +341,16 @@ R_FindPlane
     }
     
 			
-    if (check < lastvisplane)
-	return check;
+    if (check != NULL)
+    {
+	result = check;
+	goto done;
+    }
 		
     if (lastvisplane - visplanes == MAXVISPLANES)
 	I_Error ("R_FindPlane: no more visplanes");
 		
-    lastvisplane++;
+    check = lastvisplane++;
 
     check->height = height;
     check->picnum = picnum;
@@ -248,15 +359,20 @@ R_FindPlane
     check->maxx = -1;
     
     memset (check->top,0xff,sizeof(check->top));
+    R_LinkVisplane(check);
 		
-    return check;
+    result = check;
+
+  done:
+    R_PERF_DETAIL_END(R_PERF_DETAIL_BSP_FIND_PLANE, perf_start);
+    return result;
 }
 
 
 //
 // R_CheckPlane
 //
-visplane_t*
+OF_FASTTEXT visplane_t*
 R_CheckPlane
 ( visplane_t*	pl,
   int		start,
@@ -266,7 +382,9 @@ R_CheckPlane
     int		intrh;
     int		unionl;
     int		unionh;
-    int		x;
+    unsigned int perf_start;
+
+    perf_start = R_PERF_DETAIL_BEGIN();
 	
     if (start < pl->minx)
     {
@@ -290,33 +408,32 @@ R_CheckPlane
 	intrh = stop;
     }
 
-    for (x=intrl ; x<= intrh ; x++)
-	if (pl->top[x] != 0xff)
-	    break;
-
-    if (x > intrh)
+    if (R_PlaneRangeIsOpen(pl->top, intrl, intrh))
     {
 	pl->minx = unionl;
 	pl->maxx = unionh;
 
 	// use the same one
+	R_PERF_DETAIL_END(R_PERF_DETAIL_BSP_CHECK_PLANE, perf_start);
 	return pl;		
     }
 	
+    if (lastvisplane - visplanes == MAXVISPLANES)
+	I_Error ("R_CheckPlane: no more visplanes");
+
     // make a new visplane
     lastvisplane->height = pl->height;
     lastvisplane->picnum = pl->picnum;
     lastvisplane->lightlevel = pl->lightlevel;
-    
-    if (lastvisplane - visplanes == MAXVISPLANES)
-	I_Error ("R_CheckPlane: no more visplanes");
 
     pl = lastvisplane++;
     pl->minx = start;
     pl->maxx = stop;
 
     memset (pl->top,0xff,sizeof(pl->top));
+    R_LinkVisplane(pl);
 		
+    R_PERF_DETAIL_END(R_PERF_DETAIL_BSP_CHECK_PLANE, perf_start);
     return pl;
 }
 
@@ -324,7 +441,7 @@ R_CheckPlane
 //
 // R_MakeSpans
 //
-void
+OF_FASTTEXT void
 R_MakeSpans
 ( int		x,
   int		t1,
@@ -361,7 +478,7 @@ R_MakeSpans
 // R_DrawPlanes
 // At the end of each frame.
 //
-void R_DrawPlanes (void)
+OF_FASTTEXT void R_DrawPlanes (void)
 {
     visplane_t*		pl;
     int			light;
@@ -431,6 +548,7 @@ void R_DrawPlanes (void)
 	    light = 0;
 
 	planezlight = zlight[light];
+	planezlightrow = zlightrow[light];
 
 	pl->top[pl->maxx+1] = 0xff;
 	pl->top[pl->minx-1] = 0xff;

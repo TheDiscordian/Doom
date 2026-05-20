@@ -2408,6 +2408,15 @@ void G_DoPlayDemo (void)
     else if (demoversion != G_VanillaVersionCode() &&
              !(gameversion <= exe_doom_1_2 && olddemo))
     {
+        if (modifiedgame && !singledemo && !timingdemo)
+        {
+            W_ReleaseLumpNum(lumpnum);
+            demobuffer = NULL;
+            demo_p = NULL;
+            D_AdvanceDemo();
+            return;
+        }
+
         const char *message = "Demo is from a different game version!\n"
                               "(read %i, should be %i)\n"
                               "\n"

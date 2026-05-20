@@ -22,6 +22,7 @@
 
 
 extern lighttable_t **walllights;
+extern byte *walllightrows;
 
 
 void

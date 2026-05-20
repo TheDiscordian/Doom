@@ -24,10 +24,12 @@
 
 #include <stdlib.h>
 #include <math.h>
+#include <stdint.h>
 
 
 #include "doomdef.h"
 #include "d_loop.h"
+#include "of_fastram.h"
 
 #include "m_bbox.h"
 #include "m_menu.h"
@@ -87,6 +89,8 @@ boolean		crispy_uncapped = true;
 boolean		r_interpolate = false;
 fixed_t		fractionaltic = 0;
 
+#define R_CACHE_ALIGNED __attribute__((aligned(64)))
+
 //
 // precalculated math tables
 //
@@ -96,16 +100,21 @@ angle_t			clipangle;
 // maps the visible view angles to screen X coordinates,
 // flattening the arc to a flat projection plane.
 // There will be many angles mapped to the same X. 
-int			viewangletox[FINEANGLES/2];
+int			viewangletox[FINEANGLES/2] R_CACHE_ALIGNED;
 
 // The xtoviewangleangle[] table maps a screen pixel
 // to the lowest viewangle that maps back to x ranges
 // from clipangle to -clipangle.
-angle_t			xtoviewangle[SCREENWIDTH+1];
+angle_t			xtoviewangle[SCREENWIDTH+1] R_CACHE_ALIGNED;
 
-lighttable_t*		scalelight[LIGHTLEVELS][MAXLIGHTSCALE];
-lighttable_t*		scalelightfixed[MAXLIGHTSCALE];
-lighttable_t*		zlight[LIGHTLEVELS][MAXLIGHTZ];
+lighttable_t*		scalelight[LIGHTLEVELS][MAXLIGHTSCALE]
+    R_CACHE_ALIGNED;
+lighttable_t*		scalelightfixed[MAXLIGHTSCALE] R_CACHE_ALIGNED;
+lighttable_t*		zlight[LIGHTLEVELS][MAXLIGHTZ] R_CACHE_ALIGNED;
+byte			scalelightrow[LIGHTLEVELS][MAXLIGHTSCALE]
+    R_CACHE_ALIGNED;
+byte			scalelightfixedrow[MAXLIGHTSCALE] R_CACHE_ALIGNED;
+byte			zlightrow[LIGHTLEVELS][MAXLIGHTZ] R_CACHE_ALIGNED;
 
 // bumped light from gun blasts
 int			extralight;			
@@ -148,7 +157,7 @@ R_AddPointToBox
 //  check point against partition plane.
 // Returns side 0 (front) or 1 (back).
 //
-int
+OF_FASTTEXT int
 R_PointOnSide
 ( fixed_t	x,
   fixed_t	y,
@@ -452,7 +461,37 @@ void R_InitPointToAngle (void)
 //  at the given angle.
 // rw_distance must be calculated first.
 //
-fixed_t R_ScaleFromGlobalAngle (angle_t visangle)
+static inline fixed_t R_PositiveScaleDiv(fixed_t num, int den)
+{
+    uint32_t whole;
+    uint32_t rem;
+    uint32_t result;
+    uint32_t uden;
+    uint32_t bit;
+
+    uden = (uint32_t)den;
+    whole = (uint32_t)num / uden;
+
+    if (whole >= 64u)
+	return 64 * FRACUNIT;
+
+    rem = (uint32_t)num - whole * uden;
+    result = whole << FRACBITS;
+
+    for (bit = 1u << (FRACBITS - 1); bit != 0; bit >>= 1)
+    {
+	rem <<= 1;
+	if (rem >= uden)
+	{
+	    result |= bit;
+	    rem -= uden;
+	}
+    }
+
+    return (fixed_t)result;
+}
+
+OF_FASTTEXT fixed_t R_ScaleFromGlobalAngle (angle_t visangle)
 {
     fixed_t		scale;
     angle_t		anglea;
@@ -490,7 +529,7 @@ fixed_t R_ScaleFromGlobalAngle (angle_t visangle)
 
     if (den > num>>FRACBITS)
     {
-	scale = FixedDiv (num, den);
+	scale = R_PositiveScaleDiv (num, den);
 
 	if (scale > 64*FRACUNIT)
 	    scale = 64*FRACUNIT;
@@ -639,6 +678,7 @@ void R_InitLightTables (void)
 		level = NUMCOLORMAPS-1;
 
 	    zlight[i][j] = colormaps + level*256;
+	    zlightrow[i][j] = (byte)level;
 	}
     }
 }
@@ -758,6 +798,7 @@ void R_ExecuteSetViewSize (void)
 		level = NUMCOLORMAPS-1;
 
 	    scalelight[i][j] = colormaps + level*256;
+	    scalelightrow[i][j] = (byte)level;
 	}
     }
 }
@@ -873,9 +914,13 @@ void R_SetupFrame (player_t* player)
 	    + player->fixedcolormap*256;
 	
 	walllights = scalelightfixed;
+	walllightrows = scalelightfixedrow;
 
 	for (i=0 ; i<MAXLIGHTSCALE ; i++)
+	{
 	    scalelightfixed[i] = fixedcolormap;
+	    scalelightfixedrow[i] = (byte)player->fixedcolormap;
+	}
     }
     else
 	fixedcolormap = 0;

@@ -20,6 +20,10 @@
 #ifndef __M_FIXED__
 #define __M_FIXED__
 
+#include <limits.h>
+#include <stdint.h>
+#include <stdlib.h>
+
 
 
 
@@ -31,8 +35,34 @@
 
 typedef int fixed_t;
 
+#ifndef M_FIXED_NO_INLINE
+static inline fixed_t FixedMul(fixed_t a, fixed_t b)
+{
+    return ((int64_t) a * (int64_t) b) >> FRACBITS;
+}
+#else
 fixed_t FixedMul	(fixed_t a, fixed_t b);
+#endif
+
+#ifndef M_FIXED_NO_INLINE
+static inline fixed_t FixedDiv(fixed_t a, fixed_t b)
+{
+    if ((abs(a) >> 14) >= abs(b))
+    {
+	return (a^b) < 0 ? INT_MIN : INT_MAX;
+    }
+    else
+    {
+	int64_t result;
+
+	result = ((int64_t) a << FRACBITS) / b;
+
+	return (fixed_t) result;
+    }
+}
+#else
 fixed_t FixedDiv	(fixed_t a, fixed_t b);
+#endif
 
 
 

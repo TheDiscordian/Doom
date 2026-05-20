@@ -21,10 +21,13 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
 
 
 #include "deh_main.h"
 #include "doomdef.h"
+#include "of_fastram.h"
 
 #include "i_swap.h"
 #include "i_system.h"
@@ -32,6 +35,8 @@
 #include "w_wad.h"
 
 #include "r_local.h"
+#include "r_perf.h"
+#include "r_gpu.h"
 
 #include "doomstat.h"
 
@@ -396,6 +401,7 @@ R_DrawVisSprite
     int			patchwidth;
     fixed_t		frac;
     patch_t*		patch;
+    boolean		fuzz_gpu_batch = false;
 	
 	
     patch = W_CacheLumpNum (vis->patch+firstspritelump, PU_CACHE);
@@ -422,7 +428,10 @@ R_DrawVisSprite
     frac = vis->startfrac;
     spryscale = vis->scale;
     sprtopscreen = centeryfrac - FixedMul(dc_texturemid,spryscale);
-	
+
+    if (!dc_colormap && R_GPU_CanDrawFuzz())
+	fuzz_gpu_batch = R_GPU_BeginFuzzSpans();
+
     for (dc_x=vis->x1 ; dc_x<=vis->x2 ; dc_x++, frac += vis->xiscale)
     {
 	texturecolumn = frac>>FRACBITS;
@@ -432,6 +441,9 @@ R_DrawVisSprite
 			       LONG(patch->columnofs[texturecolumn]));
 	R_DrawMaskedColumn (column);
     }
+
+    if (fuzz_gpu_batch)
+	R_GPU_EndFuzzSpans();
 
     colfunc = basecolfunc;
 }
@@ -530,18 +542,15 @@ void R_ProjectSprite (mobj_t* thing)
     if (abs(tx)>(tz<<2))
 	return;
     
-    // decide which patch to use for sprite relative to player
-#ifdef RANGECHECK
     if ((unsigned int) thing->sprite >= (unsigned int) numsprites)
-	I_Error ("R_ProjectSprite: invalid sprite number %i ",
-		 thing->sprite);
-#endif
+	return;
+
     sprdef = &sprites[thing->sprite];
-#ifdef RANGECHECK
-    if ( (thing->frame&FF_FRAMEMASK) >= sprdef->numframes )
-	I_Error ("R_ProjectSprite: invalid sprite frame %i : %i ",
-		 thing->sprite, thing->frame);
-#endif
+
+    if ((unsigned int) (thing->frame & FF_FRAMEMASK)
+     >= (unsigned int) sprdef->numframes)
+	return;
+
     sprframe = &sprdef->spriteframes[ thing->frame & FF_FRAMEMASK];
 
     if (sprframe->rotate)
@@ -558,6 +567,9 @@ void R_ProjectSprite (mobj_t* thing)
 	lump = sprframe->lump[0];
 	flip = (boolean)sprframe->flip[0];
     }
+
+    if ((unsigned int) lump >= (unsigned int) numspritelumps)
+	return;
     
     // calculate edges of the shape
     tx -= spriteoffset[lump];	
@@ -642,6 +654,7 @@ void R_AddSprites (sector_t* sec)
 {
     mobj_t*		thing;
     int			lightnum;
+    unsigned int        perf_start;
 
     // BSP is traversed by subsector.
     // A sector might have been split into several
@@ -649,6 +662,8 @@ void R_AddSprites (sector_t* sec)
     // Thus we check whether its already added.
     if (sec->validcount == validcount)
 	return;		
+
+    perf_start = R_PERF_DETAIL_BEGIN();
 
     // Well, now it will be done.
     sec->validcount = validcount;
@@ -665,6 +680,8 @@ void R_AddSprites (sector_t* sec)
     // Handle all things in sector.
     for (thing = sec->thinglist ; thing ; thing = thing->snext)
 	R_ProjectSprite (thing);
+
+    R_PERF_DETAIL_END(R_PERF_DETAIL_BSP_ADD_SPRITES, perf_start);
 }
 
 
@@ -683,22 +700,22 @@ void R_DrawPSprite (pspdef_t* psp)
     vissprite_t*	vis;
     vissprite_t		avis;
     
-    // decide which patch to use
-#ifdef RANGECHECK
     if ( (unsigned)psp->state->sprite >= (unsigned int) numsprites)
-	I_Error ("R_ProjectSprite: invalid sprite number %i ",
-		 psp->state->sprite);
-#endif
+	return;
+
     sprdef = &sprites[psp->state->sprite];
-#ifdef RANGECHECK
-    if ( (psp->state->frame & FF_FRAMEMASK)  >= sprdef->numframes)
-	I_Error ("R_ProjectSprite: invalid sprite frame %i : %i ",
-		 psp->state->sprite, psp->state->frame);
-#endif
+
+    if ((unsigned int) (psp->state->frame & FF_FRAMEMASK)
+     >= (unsigned int) sprdef->numframes)
+	return;
+
     sprframe = &sprdef->spriteframes[ psp->state->frame & FF_FRAMEMASK ];
 
     lump = sprframe->lump[0];
     flip = (boolean)sprframe->flip[0];
+
+    if ((unsigned int) lump >= (unsigned int) numspritelumps)
+	return;
     
     // calculate edges of the shape
     tx = psp->sx-(SCREENWIDTH/2)*FRACUNIT;
@@ -1013,4 +1030,3 @@ void R_DrawMasked (void)
     if (!viewangleoffset)		
 	R_DrawPlayerSprites ();
 }
-
