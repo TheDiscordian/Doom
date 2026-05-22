@@ -106,8 +106,8 @@ Word 1+: command-specific payload
 | 0x25     | SET_SHADE_MODE    | 1             | gouraud enable                     |
 | 0x30     | DRAW_TRIANGLES    | 1 + N×6       | count, then count vertices (6 words each) |
 | 0x31     | DRAW_INDEXED      | 2 + V×6 + I   | vert_count, idx_count, verts, indices |
-| 0x40     | DRAW_SPAN         | 16            | full span descriptor               |
-| 0x41     | DRAW_SPANS_BATCH  | 1 + N×16      | count, then count span descriptors |
+| 0x46     | DRAW_PERSP_SPAN_GROUP  | 23       | clipped perspective group          |
+| 0x47     | DRAW_AFFINE_SPAN_GROUP | 4 + 7×N  | independent affine group           |
 
 ### 3.3. Vertex Encoding in Ring (6 words = 24 bytes)
 
@@ -156,7 +156,7 @@ The rasterizer uses integer edge stepping (add `A` per X step, add `B` per Y ste
 
 ### 4.3. Span Bypass
 
-When a DRAW_SPAN command arrives, it skips triangle setup entirely. The span's pre-computed parameters (start coord, step, count) feed directly into the fragment processor. The rasterizer just counts pixels using the span's `count` field.
+When a grouped span command arrives, it skips triangle setup entirely. The pre-computed per-lane parameters feed directly into the fragment processor. The rasterizer just counts pixels using each lane's `count` field.
 
 Two texture addressing modes (selected by span flags):
 - **Multiply mode** (Quake): `addr = base + (t >> 16) * width + (s >> 16)`
@@ -207,20 +207,20 @@ Doom renders vertical columns (walls) and horizontal spans (floors/ceilings). Pu
 
 ```c
 // Wall column
-of_gpu_span_t col = {
-    .fb_addr  = dest_addr,
-    .tex_addr = texture_addr,
-    .s        = frac,           // texture V position (16.16)
-    .t        = 0,              // unused (1D column)
-    .sstep    = fracstep,       // V step per pixel
-    .tstep    = 0,
-    .count    = column_height,
-    .light    = light_level,
-    .flags    = OF_GPU_SPAN_COLORMAP | OF_GPU_SPAN_COLUMN,
-    .fb_stride = 320,           // advance one row per pixel
-    .tex_width = tex_height,    // 1D column texture
+of_gpu_affine_span_group_t cols = {
+    .lane_count = 1,
+    .flags = OF_GPU_SPAN_COLORMAP,
+    .fb_step = 320,             // advance one row per pixel
+    .tex_width = 1,
+    .tex_h_mask = 127,
+    .fb_addr[0] = dest_addr,
+    .tex_addr[0] = texture_addr,
+    .count[0] = column_height,
+    .t[0] = frac,               // texture V position (16.16)
+    .tstep[0] = fracstep,       // V step per pixel
+    .light[0] = light_level,
 };
-of_gpu_draw_span(&col);
+of_gpu_draw_affine_span_group(&cols);
 ```
 
 ### 5.2. Duke3D (Build Engine)
@@ -229,21 +229,23 @@ Same span model as Doom but with shift-based texture addressing.
 
 ```c
 // Floor/ceiling span (hlineasm4)
-of_gpu_span_t span = {
-    .fb_addr   = dest_addr,
-    .tex_addr  = texture_addr,
-    .s         = u_fixed,
-    .t         = v_fixed,
-    .sstep     = u_step,
-    .tstep     = v_step,
-    .count     = pixel_count,
-    .light     = shade,
-    .flags     = OF_GPU_SPAN_COLORMAP,
-    .fb_stride = 1,
-    .tex_shift = shifter,       // Build engine V shift
-    .tex_bits  = bits,          // Build engine UV combine width
+of_gpu_affine_span_group_t spans = {
+    .lane_count = 1,
+    .flags = OF_GPU_SPAN_COLORMAP,
+    .fb_step = 1,
+    .tex_width = tex_width,
+    .tex_w_mask = tex_w_mask,
+    .tex_h_mask = tex_h_mask,
+    .fb_addr[0] = dest_addr,
+    .tex_addr[0] = texture_addr,
+    .count[0] = pixel_count,
+    .s[0] = u_fixed,
+    .t[0] = v_fixed,
+    .sstep[0] = u_step,
+    .tstep[0] = v_step,
+    .light[0] = shade,
 };
-of_gpu_draw_span(&span);
+of_gpu_draw_affine_span_group(&spans);
 ```
 
 ### 5.3. Quake
@@ -251,7 +253,7 @@ of_gpu_draw_span(&span);
 Two options:
 
 **Option A: Span path (like PocketQuake)**
-Use `of_gpu_draw_span()` with `OF_GPU_SPAN_PERSP` for perspective-corrected world surfaces, and plain spans for alias models. Closest to existing PocketQuake code — easiest port.
+Use `of_gpu_draw_persp_span_group()` for perspective-corrected world surfaces and `of_gpu_draw_affine_span_group()` where affine spans are enough. Closest to existing PocketQuake code — easiest port.
 
 **Option B: Triangle path (like GLQuake)**
 Submit BSP surfaces as triangle fans. The GPU handles rasterization and texturing.

@@ -423,29 +423,32 @@ static void draw_maze_demo(int frame) {
         int32_t sstep = (int32_t)(step_x * 65536.0f);
         int32_t tstep = (int32_t)(step_y * 65536.0f);
 
-        of_gpu_span_t fs = {
-            .fb_addr   = fb_addr + y * SCREEN_W,
-            .tex_addr  = floor_addr,
-            .s         = s0,
-            .t         = t0,
-            .sstep     = sstep,
-            .tstep     = tstep,
-            .count     = SCREEN_W,
-            .light     = light,
-            .flags     = OF_GPU_SPAN_COLORMAP,
-            .fb_stride = 1,
-            .tex_width = 64,
+        of_gpu_affine_span_group_t fs = {
+            .lane_count = 1,
+            .flags      = OF_GPU_SPAN_COLORMAP,
+            .tex_width  = 64,
+            .tex_w_mask = 63,
+            .tex_h_mask = 63,
+            .fb_step    = 1,
+            .fb_addr    = { fb_addr + y * SCREEN_W },
+            .tex_addr   = { floor_addr },
+            .count      = { SCREEN_W },
+            .s          = { s0 },
+            .t          = { t0 },
+            .sstep      = { sstep },
+            .tstep      = { tstep },
+            .light      = { (uint8_t)light },
         };
-        of_gpu_draw_span(&fs);
+        of_gpu_draw_affine_span_group(&fs);
 
         /* Mirror into the ceiling row — same row_dist, different tex. */
         int cy = (SCREEN_H - 1) - y;
         if (cy >= 0 && cy < horizon) {
-            of_gpu_span_t cs = fs;
-            cs.fb_addr  = fb_addr + cy * SCREEN_W;
-            cs.tex_addr = wall_addr;
-            cs.light    = (light + 6 > 60) ? 60 : light + 6;
-            of_gpu_draw_span(&cs);
+            of_gpu_affine_span_group_t cs = fs;
+            cs.fb_addr[0] = fb_addr + cy * SCREEN_W;
+            cs.tex_addr[0] = wall_addr;
+            cs.light[0] = (uint8_t)((light + 6 > 60) ? 60 : light + 6);
+            of_gpu_draw_affine_span_group(&cs);
         }
     }
 
@@ -514,20 +517,23 @@ static void draw_maze_demo(int frame) {
         if (light < 0)  light = 0;
         if (light > 63) light = 63;
 
-        of_gpu_span_t col = {
-            .fb_addr   = fb_addr + draw_start * SCREEN_W + x,
-            .tex_addr  = wall_addr,
-            .s         = (int32_t)texX << 16,
-            .t         = t0,
-            .sstep     = 0,
-            .tstep     = tstep,
-            .count     = span_count,
-            .light     = light,
-            .flags     = OF_GPU_SPAN_COLORMAP,
-            .fb_stride = SCREEN_W,
-            .tex_width = 64,
+        of_gpu_affine_span_group_t col = {
+            .lane_count = 1,
+            .flags      = OF_GPU_SPAN_COLORMAP,
+            .tex_width  = 64,
+            .tex_w_mask = 63,
+            .tex_h_mask = 63,
+            .fb_step    = SCREEN_W,
+            .fb_addr    = { fb_addr + draw_start * SCREEN_W + x },
+            .tex_addr   = { wall_addr },
+            .count      = { (uint16_t)span_count },
+            .s          = { (int32_t)texX << 16 },
+            .t          = { t0 },
+            .sstep      = { 0 },
+            .tstep      = { tstep },
+            .light      = { (uint8_t)light },
         };
-        of_gpu_draw_span(&col);
+        of_gpu_draw_affine_span_group(&col);
     }
 
     unsigned int _t1 = of_time_us();
@@ -749,26 +755,26 @@ static void draw_persp_demo(int frame) {
         if (count <= 0) continue;
 
         int32_t inv_count = (1 << 16) / count;  /* 16.16 of 1/count */
-        of_gpu_span_t span = {
+        of_gpu_persp_span_group_t span = {
             .fb_addr     = fb_addr + y * SCREEN_W + xl,
             .tex_addr    = (uint32_t)(uintptr_t)persp_tex,
-            .s           = 0,                              /* unused (PERSP) */
-            .t           = 0,
-            .sstep       = 0,
-            .tstep       = 0,
-            .count       = count,
-            .light       = 0,
+            .lane_count  = 1,
             .flags       = OF_GPU_SPAN_COLORMAP | OF_GPU_SPAN_PERSP,
-            .fb_stride   = 1,
+            .major_fb_step = 0,
+            .minor_fb_step = 1,
             .tex_width   = 64,
+            .tex_w_mask  = 63,
+            .tex_h_mask  = 63,
+            .start       = { 0 },
+            .count       = { (uint16_t)count },
             .sdivz       = sZ1,
             .tdivz       = tZ1,
             .zi_persp    = oZ1,
-            .sdivz_step  = (int32_t)(((int64_t)(sZ2 - sZ1) * inv_count) >> 16),
-            .tdivz_step  = (int32_t)(((int64_t)(tZ2 - tZ1) * inv_count) >> 16),
-            .zi_step     = (int32_t)(((int64_t)(oZ2 - oZ1) * inv_count) >> 16),
+            .sdivz_minor_step = (int32_t)(((int64_t)(sZ2 - sZ1) * inv_count) >> 16),
+            .tdivz_minor_step = (int32_t)(((int64_t)(tZ2 - tZ1) * inv_count) >> 16),
+            .zi_minor_step    = (int32_t)(((int64_t)(oZ2 - oZ1) * inv_count) >> 16),
         };
-        of_gpu_draw_span(&span);
+        of_gpu_draw_persp_span_group(&span);
     }
 
     unsigned int _t1 = of_time_us();

@@ -107,6 +107,8 @@ R_RenderMaskedSegRange
     int		lightnum;
     int		texnum;
     rendersegcache_t *cache;
+    byte**	column_table;
+    int		widthmask;
     
     // Calculate light table.
     // Use different light tables
@@ -117,6 +119,8 @@ R_RenderMaskedSegRange
     frontsector = cache->frontsector;
     backsector = cache->backsector;
     texnum = texturetranslation[cache->midtexture];
+    column_table = R_GetColumnTable(texnum);
+    widthmask = R_GetTextureWidthMask(texnum);
 	
     lightnum = (frontsector->lightlevel >> LIGHTSEGSHIFT)+extralight;
     lightnum += cache->lightbias;
@@ -190,8 +194,8 @@ R_RenderMaskedSegRange
 	    dc_iscale = 0xffffffffu / (unsigned)spryscale;
 	    
 	    // draw the texture
-	    col = (column_t *)( 
-		(byte *)R_GetColumn(texnum,maskedtexturecol[dc_x]) -3);
+	    col = (column_t *)
+		(column_table[maskedtexturecol[dc_x] & widthmask] - 3);
 			
 	    R_DrawMaskedColumn (col);
 	    maskedtexturecol[dc_x] = SHRT_MAX;
@@ -247,7 +251,8 @@ R_PrepareDrawColumn(fixed_t scale, int *iscale, int *lightrow,
     *iscale = dc_iscale;
 }
 
-static void R_DrawSegColumn(int x, int texnum, fixed_t texturecolumn,
+static void R_DrawSegColumn(int x, byte **columns, int widthmask,
+                            fixed_t texturecolumn,
                             fixed_t texturemid, int yl, int yh,
                             int lightrow)
 {
@@ -255,7 +260,7 @@ static void R_DrawSegColumn(int x, int texnum, fixed_t texturecolumn,
     dc_yl = yl;
     dc_yh = yh;
     dc_texturemid = texturemid;
-    dc_source = R_GetColumn(texnum, texturecolumn);
+    dc_source = columns[(int)texturecolumn & widthmask];
 
     if (detailshift == 0 && colfunc == basecolfunc
 	&& R_GPU_DrawColumnLightDirect(x, yl, yh, dc_source,
@@ -330,7 +335,8 @@ OF_FASTTEXT static void R_FlushWallColumnBatch(wall_column_batch_t *batch)
 
 static inline void __attribute__((always_inline))
 R_AddWallColumnBatch(wall_column_batch_t *batch,
-		     int x, int texnum, fixed_t texturecolumn,
+		     int x, byte **columns, int widthmask,
+		     fixed_t texturecolumn,
 		     fixed_t texturemid, int yl, int yh,
 		     int iscale, int lightrow,
 		     lighttable_t *colormap)
@@ -343,7 +349,8 @@ R_AddWallColumnBatch(wall_column_batch_t *batch,
     if (detailshift != 0 || colfunc != basecolfunc)
     {
 	R_FlushWallColumnBatch(batch);
-	R_DrawSegColumn(x, texnum, texturecolumn, texturemid, yl, yh, lightrow);
+	R_DrawSegColumn(x, columns, widthmask, texturecolumn, texturemid,
+			yl, yh, lightrow);
 	return;
     }
 
@@ -367,7 +374,7 @@ R_AddWallColumnBatch(wall_column_batch_t *batch,
     lane = batch->lanes++;
     batch->yl[lane] = yl;
     batch->yh[lane] = yh;
-    batch->source[lane] = R_GetColumn(texnum, texturecolumn);
+    batch->source[lane] = columns[(int)texturecolumn & widthmask];
     batch->t[lane] = (int32_t)((uint32_t)texturemid
 			       + (uint32_t)(yl - centery) * (uint32_t)iscale);
     batch->tstep[lane] = iscale;
@@ -386,8 +393,6 @@ OF_FASTTEXT void R_RenderSegLoop (void)
     int			bottom;
     int			x;
     int			stopx;
-    int			lightrow;
-    int			iscale;
     fixed_t		scale;
     fixed_t		scalestep;
     fixed_t		topf;
@@ -407,7 +412,15 @@ OF_FASTTEXT void R_RenderSegLoop (void)
     boolean		do_markfloor;
     boolean             texturecolumn_ready;
     boolean             drawcolumn_ready;
+    int			lightrow;
+    int			iscale;
     lighttable_t*	column_colormap;
+    byte**		mid_columns;
+    byte**		top_columns;
+    byte**		bottom_columns;
+    int			mid_widthmask;
+    int			top_widthmask;
+    int			bottom_widthmask;
     wall_column_batch_t upper_batch;
     wall_column_batch_t lower_batch;
     unsigned int        perf_start;
@@ -435,6 +448,28 @@ OF_FASTTEXT void R_RenderSegLoop (void)
     do_markfloor = markfloor;
     upper_batch.lanes = 0;
     lower_batch.lanes = 0;
+    mid_columns = NULL;
+    top_columns = NULL;
+    bottom_columns = NULL;
+    mid_widthmask = 0;
+    top_widthmask = 0;
+    bottom_widthmask = 0;
+
+    if (midtexture)
+    {
+	mid_columns = R_GetColumnTable(midtexture);
+	mid_widthmask = R_GetTextureWidthMask(midtexture);
+    }
+    if (toptexture)
+    {
+	top_columns = R_GetColumnTable(toptexture);
+	top_widthmask = R_GetTextureWidthMask(toptexture);
+    }
+    if (bottomtexture)
+    {
+	bottom_columns = R_GetColumnTable(bottomtexture);
+	bottom_widthmask = R_GetTextureWidthMask(bottomtexture);
+    }
 
     for ( ; x < stopx ; x++)
     {
@@ -490,9 +525,9 @@ OF_FASTTEXT void R_RenderSegLoop (void)
 	    R_PrepareDrawColumn(scale, &iscale, &lightrow,
 				&column_colormap);
 	    drawcolumn_ready = true;
-	    R_AddWallColumnBatch(&upper_batch, x, midtexture, texturecolumn,
-				 rw_midtexturemid, yl, yh, iscale,
-				 lightrow, column_colormap);
+	    R_AddWallColumnBatch(&upper_batch, x, mid_columns, mid_widthmask,
+				 texturecolumn, rw_midtexturemid,
+				 yl, yh, iscale, lightrow, column_colormap);
 	    ceiling_clip[x] = viewheight;
 	    floor_clip[x] = -1;
 	}
@@ -521,10 +556,10 @@ OF_FASTTEXT void R_RenderSegLoop (void)
 					    &column_colormap);
 			drawcolumn_ready = true;
 		    }
-		    R_AddWallColumnBatch(&upper_batch, x, toptexture,
-					 texturecolumn, rw_toptexturemid,
-					 yl, mid, iscale, lightrow,
-					 column_colormap);
+		    R_AddWallColumnBatch(&upper_batch, x, top_columns,
+					 top_widthmask, texturecolumn,
+					 rw_toptexturemid, yl, mid,
+					 iscale, lightrow, column_colormap);
 		    ceiling_clip[x] = mid;
 		}
 		else
@@ -560,10 +595,10 @@ OF_FASTTEXT void R_RenderSegLoop (void)
 					    &column_colormap);
 			drawcolumn_ready = true;
 		    }
-		    R_AddWallColumnBatch(&lower_batch, x, bottomtexture,
-					 texturecolumn, rw_bottomtexturemid,
-					 mid, yh, iscale, lightrow,
-					 column_colormap);
+		    R_AddWallColumnBatch(&lower_batch, x, bottom_columns,
+					 bottom_widthmask, texturecolumn,
+					 rw_bottomtexturemid, mid, yh,
+					 iscale, lightrow, column_colormap);
 		    floor_clip[x] = mid;
 		}
 		else

@@ -31,6 +31,9 @@ R_GetColumn
 ( int		tex,
   int		col );
 
+byte **R_GetColumnTable(int tex);
+int R_GetTextureWidthMask(int tex);
+
 
 // I/O, setting up the stuff.
 void R_InitData (void);

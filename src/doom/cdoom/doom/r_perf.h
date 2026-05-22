@@ -15,6 +15,32 @@
 #define R_RUNTIME_TRACES 0
 #endif
 
+#ifndef R_RENDER_PERF_DETAIL
+#define R_RENDER_PERF_DETAIL 0
+#endif
+
+#ifndef R_RENDER_PERF_DETAIL_TIMING
+#define R_RENDER_PERF_DETAIL_TIMING 0
+#endif
+
+/*
+ * Instrumentation modes:
+ *
+ * R_RENDER_PERF enables the 5s render pipeline summary by default; use
+ * -noperf to suppress it in a diagnostic build.
+ * R_RENDER_PERF_DETAIL additionally enables hot-loop BSP/plane/masked work
+ * counters.  R_RENDER_PERF_DETAIL_TIMING adds microsecond timing around
+ * those hot probes; keep that separate because these probes live in
+ * OF_FASTTEXT render functions and can pressure the small BRAM budget.
+ *
+ * R_RUNTIME_TRACES enables optional UART-oriented trace summaries selected
+ * at runtime with -pacingtrace, -fuzztrace/-fuzztiming, or -slowframetrace.
+ *
+ * Default builds keep both off.  The pacing frame-time helpers below are
+ * still present because adaptive presentation uses them as state, not as
+ * logging.
+ */
+
 typedef enum
 {
     R_PERF_STAGE_DISPLAY,
@@ -83,7 +109,7 @@ static inline void R_Perf_AddStageUS(r_perf_stage_t stage,
 }
 #endif
 
-#if R_RENDER_PERF
+#if R_RENDER_PERF && R_RENDER_PERF_DETAIL
 
 void R_Perf_CountDetail(r_perf_detail_t detail);
 void R_Perf_EndDetail(r_perf_detail_t detail, unsigned int start_us);
@@ -92,6 +118,7 @@ extern int r_perf_summary_enabled;
 extern int r_perf_detail_enabled;
 extern uint32_t r_perf_detail_count[R_PERF_DETAIL_COUNT];
 
+#if R_RENDER_PERF_DETAIL_TIMING
 #define R_PERF_DETAIL_BEGIN() \
     (r_perf_detail_enabled ? R_Perf_BeginStage() : 0u)
 
@@ -100,14 +127,34 @@ extern uint32_t r_perf_detail_count[R_PERF_DETAIL_COUNT];
         if (r_perf_detail_enabled) \
             R_Perf_EndDetail((detail), (start_us)); \
         else if (r_perf_summary_enabled) \
-            r_perf_detail_count[(detail)]++; \
+            R_Perf_CountDetail((detail)); \
     } while (0)
+#else
+#define R_PERF_DETAIL_BEGIN() 0u
+
+#define R_PERF_DETAIL_END(detail, start_us) \
+    do { \
+        (void)(start_us); \
+        r_perf_detail_count[(detail)]++; \
+    } while (0)
+#endif
 
 #define R_PERF_DETAIL_COUNT(detail) \
     do { \
-        if (r_perf_summary_enabled || r_perf_detail_enabled) \
-            r_perf_detail_count[(detail)]++; \
+        r_perf_detail_count[(detail)]++; \
     } while (0)
+
+#else
+
+#define R_PERF_DETAIL_BEGIN() 0u
+#define R_PERF_DETAIL_END(detail, start_us) \
+    do { (void)(detail); (void)(start_us); } while (0)
+#define R_PERF_DETAIL_COUNT(detail) \
+    do { (void)(detail); } while (0)
+
+#endif
+
+#if R_RENDER_PERF
 
 void R_Perf_CountGpuColumn(unsigned int pixels);
 void R_Perf_CountGpuColumns(unsigned int columns, unsigned int pixels);
@@ -127,12 +174,6 @@ void R_Perf_AddGpuDebug(uint32_t dma_waits, uint32_t dma_spin_iters,
                         uint32_t status);
 
 #else
-
-#define R_PERF_DETAIL_BEGIN() 0u
-#define R_PERF_DETAIL_END(detail, start_us) \
-    do { (void)(detail); (void)(start_us); } while (0)
-#define R_PERF_DETAIL_COUNT(detail) \
-    do { (void)(detail); } while (0)
 
 static inline void R_Perf_CountDetail(r_perf_detail_t detail)
 {

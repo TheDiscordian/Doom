@@ -406,6 +406,8 @@ void V_DrawTLPatch(int x, int y, patch_t * patch)
         return;
     }
 
+    V_MarkRect(x, y, SHORT(patch->width), SHORT(patch->height));
+
     col = 0;
     desttop = dest_screen + y * SCREENWIDTH + x;
 
@@ -454,6 +456,8 @@ void V_DrawXlaPatch(int x, int y, patch_t * patch)
         if(!patchclip_callback(patch, x, y))
             return;
     }
+
+    V_MarkRect(x, y, SHORT(patch->width), SHORT(patch->height));
 
     col = 0;
     desttop = dest_screen + y * SCREENWIDTH + x;
@@ -506,6 +510,8 @@ void V_DrawAltTLPatch(int x, int y, patch_t * patch)
     {
         return;
     }
+
+    V_MarkRect(x, y, SHORT(patch->width), SHORT(patch->height));
 
     col = 0;
     desttop = dest_screen + y * SCREENWIDTH + x;

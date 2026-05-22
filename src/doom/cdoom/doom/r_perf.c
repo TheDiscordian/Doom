@@ -68,18 +68,38 @@ static int r_perf_options_checked;
 
 static void R_Perf_CheckOptions(void)
 {
+    int detail_requested;
+    int disabled;
+
     if (r_perf_options_checked)
         return;
 
-    r_perf_detail_enabled = M_CheckParm("-renderperfdetail") > 0
-                         || M_CheckParm("-perfdetail") > 0;
+    disabled = M_CheckParm("-noperf") > 0
+            || M_CheckParm("-norenderperf") > 0
+            || M_CheckParm("-noperfsummary") > 0
+            || M_CheckParm("-norenderperfsummary") > 0;
 
-    r_perf_summary_enabled = r_perf_detail_enabled
-                          || M_CheckParm("-renderperfsummary") > 0
-                          || M_CheckParm("-perfsummary") > 0;
-    r_perf_enabled = r_perf_summary_enabled
-                  || M_CheckParm("-renderperf") > 0
-                  || M_CheckParm("-perf") > 0;
+    detail_requested = M_CheckParm("-renderperfdetail") > 0
+                    || M_CheckParm("-perfdetail") > 0;
+
+    if (disabled)
+        detail_requested = 0;
+
+    r_perf_detail_enabled =
+#if R_RENDER_PERF_DETAIL_TIMING
+                          detail_requested;
+#else
+                          0;
+#endif
+
+    r_perf_summary_enabled = !disabled
+                          && (detail_requested
+                           || M_CheckParm("-renderperfsummary") > 0
+                           || M_CheckParm("-perfsummary") > 0
+                           || M_CheckParm("-renderperf") > 0
+                           || M_CheckParm("-perf") > 0
+                           || R_RENDER_PERF);
+    r_perf_enabled = r_perf_summary_enabled;
 
     r_perf_options_checked = 1;
 }
@@ -126,6 +146,8 @@ void R_Perf_EndStage(r_perf_stage_t stage, unsigned int start_us)
 
 void R_Perf_CountDetail(r_perf_detail_t detail)
 {
+    if (!r_perf_summary_enabled && !r_perf_detail_enabled)
+        return;
     if ((unsigned int)detail >= R_PERF_DETAIL_COUNT)
         return;
 
@@ -272,6 +294,7 @@ static void R_Perf_PrintAndReset(unsigned int now_us)
     R_Perf_PrintRate("cmd_flush_words", perf.cmd_flush_words, elapsed_us);
     printf("\n");
 
+#if R_RENDER_PERF_DETAIL
     if (r_perf_summary_enabled)
     {
         printf("[render_perf] scene_work:");
@@ -353,6 +376,7 @@ static void R_Perf_PrintAndReset(unsigned int now_us)
         R_Perf_PrintRate("mapplane", r_perf_detail_count[R_PERF_DETAIL_PLANE_MAP], elapsed_us);
         printf("\n");
     }
+#endif
 
     R_Perf_Reset(now_us);
 }
@@ -552,8 +576,12 @@ static void R_Slow_CheckOptions(void)
     if (slow.options_checked)
         return;
 
+#if R_RUNTIME_TRACES
     slow.enabled = M_CheckParm("-slowframetrace") > 0
                 && M_CheckParm("-noslowframetrace") <= 0;
+#else
+    slow.enabled = 0;
+#endif
     slow.options_checked = 1;
 }
 
@@ -779,6 +807,7 @@ static r_pacing_counters_t pacing;
 
 int R_Perf_FuzzTimingEnabled(void)
 {
+#if R_RUNTIME_TRACES
     if (!fuzz_options_checked)
     {
         fuzz_timing_enabled = M_CheckParm("-fuzztiming") > 0
@@ -787,6 +816,9 @@ int R_Perf_FuzzTimingEnabled(void)
     }
 
     return fuzz_timing_enabled;
+#else
+    return 0;
+#endif
 }
 
 static void R_Fuzz_Reset(void)
@@ -859,8 +891,12 @@ static void R_Pacing_CheckOptions(void)
     if (pacing.options_checked)
         return;
 
+#if R_RUNTIME_TRACES
     pacing.enabled = M_CheckParm("-pacingtrace") > 0
                   && M_CheckParm("-nopacingtrace") <= 0;
+#else
+    pacing.enabled = 0;
+#endif
     pacing.refresh_period_us = R_PACING_DEFAULT_PERIOD_US;
     pacing.options_checked = 1;
 }

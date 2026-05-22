@@ -181,16 +181,15 @@ static uint32_t gpu_acquire_token;
 static int gpu_acquire_had_work;
 static int gpu_display_frame_active;
 static int gpu_framebuffer_cpu_ready;
-static int gpu_fuzz_transluc_enabled;
+static int gpu_write_prepared;
 static int gpu_fuzz_batch_active;
-static int gpu_plane_spans_enabled;
 static uint8_t *gpu_draw_fb;
 static uint8_t *gpu_draw_render_base;
 static uintptr_t gpu_framebuffer_delta;
 
 #define GPU_DEFERRED_LUMPS 64
 #define GPU_COLUMN_BATCH_LANES 8
-#define GPU_SPAN_BATCH_SPANS 96
+#define GPU_AFFINE_BATCH_LANES OF_GPU_AFFINE_SPAN_GROUP_MAX_LANES
 #define GPU_LETTERBOX_Y ((OF_SCREEN_H - SCREENHEIGHT) / 2)
 #define GPU_FB_CACHE_LINE_BYTES 64u
 #define GPU_FB_CACHE_LINES \
@@ -199,32 +198,56 @@ static uintptr_t gpu_framebuffer_delta;
 #define GPU_FB_CACHE_WORDS ((GPU_FB_CACHE_LINES + 31u) / 32u)
 static int gpu_deferred_lumps[GPU_DEFERRED_LUMPS];
 static int gpu_deferred_lump_count;
-static of_gpu_span_group_t gpu_column_batch;
-static int gpu_column_batch_count;
-static of_gpu_span_group_varcount_t gpu_column_var_batch;
-static int gpu_column_var_batch_count;
-static int gpu_column_var_batch_base_x;
-static int gpu_column_var_batch_base_y;
-static of_gpu_span_t gpu_span_batch[GPU_SPAN_BATCH_SPANS];
-static int gpu_span_batch_count;
+static of_gpu_affine_span_group_t gpu_affine_batch;
+static int gpu_affine_batch_count;
+static int gpu_affine_batch_is_column;
+static uint32_t gpu_fb_row_addr[SCREENHEIGHT];
 static uint32_t gpu_cpu_dirty_lines[GPU_FB_CACHE_WORDS];
 static uint32_t gpu_cpu_valid_lines[GPU_FB_CACHE_WORDS];
 static uint8_t gpu_fuzz_source_tex[4] = { 0x80, 0x80, 0x80, 0x80 };
 static uint8_t gpu_fuzz_transluc_table[256 * 256];
+static uint8_t gpu_probe_fb[64] __attribute__((aligned(64)));
+static uint8_t gpu_probe_tex[64] __attribute__((aligned(64)));
 
-static void gpu_flush_column_batch(void);
-static void gpu_flush_column_var_batch(void);
-static void gpu_flush_column_batches(void);
-static void gpu_flush_span_batch(void);
+static void gpu_flush_affine_batch(void);
 static void gpu_flush_draw_batches(void);
 static void gpu_release_deferred_lumps(void);
-static uint32_t gpu_framebuffer_addr(pixel_t *ptr);
+static void gpu_prepare_for_gpu_write(void);
+static void gpu_set_framebuffer_base(uint8_t *base);
 
 static int gpu_has_pending_draw_batches(void)
 {
-    return gpu_column_batch_count != 0
-        || gpu_column_var_batch_count != 0
-        || gpu_span_batch_count != 0;
+    return gpu_affine_batch_count != 0;
+}
+
+static int gpu_probe_affine_span_group(void)
+{
+    of_gpu_affine_span_group_t group;
+
+    memset(gpu_probe_fb, 0, sizeof(gpu_probe_fb));
+    memset(gpu_probe_tex, 0, sizeof(gpu_probe_tex));
+    gpu_probe_tex[0] = 0x5a;
+
+    of_cache_flush_range(gpu_probe_fb, sizeof(gpu_probe_fb));
+    of_cache_flush_range(gpu_probe_tex, sizeof(gpu_probe_tex));
+    GPU_TEX_FLUSH = 1;
+
+    of_gpu_set_framebuffer((uint32_t)(uintptr_t)gpu_probe_fb, 8);
+
+    memset(&group, 0, sizeof(group));
+    group.lane_count = 1;
+    group.tex_width = 1;
+    group.fb_step = 1;
+    group.fb_addr[0] = (uint32_t)(uintptr_t)gpu_probe_fb;
+    group.tex_addr[0] = (uint32_t)(uintptr_t)gpu_probe_tex;
+    group.count[0] = 1;
+    group.colormap_id[0] = 0;
+
+    of_gpu_draw_affine_span_group(&group);
+    of_gpu_finish();
+    of_cache_inval_range(gpu_probe_fb, sizeof(gpu_probe_fb));
+
+    return gpu_probe_fb[0] == 0x5a;
 }
 
 static void gpu_line_set(uint32_t *bits, unsigned int line)
@@ -247,6 +270,7 @@ static void gpu_reset_cpu_cache_tracking(void)
     gpu_clear_line_bits(gpu_cpu_dirty_lines);
     gpu_clear_line_bits(gpu_cpu_valid_lines);
     gpu_cpu_dirty = 0;
+    gpu_write_prepared = 0;
 }
 
 static int gpu_clip_rect(int *x, int *y, int *w, int *h)
@@ -404,6 +428,7 @@ static void gpu_mark_cpu_dirty_rect(int x, int y, int w, int h)
     }
 
     gpu_cpu_dirty = 1;
+    gpu_write_prepared = 0;
 }
 
 static int gpu_rect_overlaps_view_rows(int x, int y, int w, int h)
@@ -507,6 +532,7 @@ static int gpu_acquire_draw_buffer(void)
     gpu_record_debug_snapshot();
     gpu_pending = 0;
     gpu_framebuffer_cpu_ready = 1;
+    gpu_write_prepared = 0;
     gpu_release_deferred_lumps();
     gpu_clear_pending_acquire();
 
@@ -526,296 +552,114 @@ static void gpu_release_deferred_lumps(void)
     gpu_deferred_lump_count = 0;
 }
 
-static void gpu_emit_batched_column_lane(int lane)
+static int gpu_can_batch_affine(uint8_t flags, uint16_t tex_width,
+                                uint16_t tex_w_mask, uint16_t tex_h_mask,
+                                int32_t fb_step, int is_column)
 {
-    _gpu_cmd_header(GPU_CMD_DRAW_SPAN_GROUP, 9);
-    _gpu_ring_write(gpu_column_batch.fb_addr
-                    + (uint32_t)((int32_t)gpu_column_batch.lane_delta * lane));
-    _gpu_ring_write(gpu_column_batch.tex_addr[lane]);
-    _gpu_ring_write(0);
-    _gpu_ring_write((uint32_t)gpu_column_batch.t[lane]);
-    _gpu_ring_write(0);
-    _gpu_ring_write((uint32_t)gpu_column_batch.tstep[lane]);
-    _gpu_ring_write((((uint32_t)gpu_column_batch.colormap_id & 0xFu) << 28) |
-                    (((uint32_t)gpu_column_batch.count & 0x0FFFu) << 16) |
-                    (((uint32_t)gpu_column_batch.light[lane] & 0x3Fu) << 8) |
-                    ((uint32_t)gpu_column_batch.flags));
-    _gpu_ring_write(((uint32_t)(uint16_t)gpu_column_batch.fb_stride << 16) |
-                    (uint32_t)gpu_column_batch.tex_width);
-    _gpu_ring_write(((uint32_t)gpu_column_batch.tex_h_mask << 16) |
-                    (uint32_t)gpu_column_batch.tex_w_mask);
+    if (gpu_affine_batch_count <= 0)
+        return 1;
+    if (gpu_affine_batch_count >= GPU_AFFINE_BATCH_LANES)
+        return 0;
+
+    return gpu_affine_batch.flags == flags &&
+        gpu_affine_batch.tex_width == tex_width &&
+        gpu_affine_batch.tex_w_mask == tex_w_mask &&
+        gpu_affine_batch.tex_h_mask == tex_h_mask &&
+        gpu_affine_batch.fb_step == fb_step &&
+        gpu_affine_batch_is_column == is_column;
 }
 
-static void gpu_emit_varcount_scalar_lane(int lane)
+static void gpu_flush_affine_batch(void)
 {
-    _gpu_cmd_header(GPU_CMD_DRAW_SPAN_GROUP, 9);
-    _gpu_ring_write(gpu_column_var_batch.fb_addr
-                    + (uint32_t)((int32_t)gpu_column_var_batch.lane_delta
-                                 * lane)
-                    + (uint32_t)((int32_t)gpu_column_var_batch.fb_stride
-                                 * (int32_t)gpu_column_var_batch.y_start[lane]));
-    _gpu_ring_write(gpu_column_var_batch.tex_addr[lane]);
-    _gpu_ring_write(0);
-    _gpu_ring_write((uint32_t)gpu_column_var_batch.t[lane]);
-    _gpu_ring_write(0);
-    _gpu_ring_write((uint32_t)gpu_column_var_batch.tstep[lane]);
-    _gpu_ring_write((((uint32_t)gpu_column_var_batch.colormap_id & 0xFu) << 28) |
-                    (((uint32_t)gpu_column_var_batch.count[lane] & 0x0FFFu) << 16) |
-                    (((uint32_t)gpu_column_var_batch.light[lane] & 0x3Fu) << 8) |
-                    ((uint32_t)gpu_column_var_batch.flags));
-    _gpu_ring_write(((uint32_t)(uint16_t)gpu_column_var_batch.fb_stride << 16) |
-                    (uint32_t)gpu_column_var_batch.tex_width);
-    _gpu_ring_write(((uint32_t)gpu_column_var_batch.tex_h_mask << 16) |
-                    (uint32_t)gpu_column_var_batch.tex_w_mask);
-}
-
-static void gpu_emit_column_group_chunk(int first_lane, int lanes)
-{
-    uint32_t words[OF_GPU_SPAN_GROUP_WORDS];
-
-    _gpu_encode_span_group_chunk(words, &gpu_column_batch,
-                                 (uint32_t)first_lane,
-                                 (uint32_t)lanes);
-    _gpu_cmd_header(GPU_CMD_DRAW_SPAN_GROUP, OF_GPU_SPAN_GROUP_WORDS);
-    for (uint32_t i = 0; i < OF_GPU_SPAN_GROUP_WORDS; i++)
-        _gpu_ring_write(words[i]);
-}
-
-static void gpu_emit_varcount_group_chunk(int first_lane, int lanes)
-{
-    uint32_t words[OF_GPU_SPAN_GROUP_VARCOUNT_WORDS];
-    uint16_t row_count;
-
-    row_count = _gpu_encode_span_group_varcount_chunk(
-        words, &gpu_column_var_batch, (uint32_t)first_lane,
-        (uint32_t)lanes);
-    if (row_count == 0)
-        return;
-
-    _gpu_cmd_header(GPU_CMD_DRAW_SPAN_GROUP,
-                    OF_GPU_SPAN_GROUP_VARCOUNT_WORDS);
-    for (uint32_t i = 0; i < OF_GPU_SPAN_GROUP_VARCOUNT_WORDS; i++)
-        _gpu_ring_write(words[i]);
-}
-
-static void gpu_flush_column_batch(void)
-{
-    int lanes = gpu_column_batch_count;
-    int first = 0;
-    int left;
+    int lanes = gpu_affine_batch_count;
 
     if (lanes <= 0)
         return;
 
-    gpu_column_batch.lane_count = (uint8_t)lanes;
+    gpu_affine_batch.lane_count = (uint8_t)lanes;
+    of_gpu_draw_affine_span_group(&gpu_affine_batch);
 
-    left = lanes;
-    while (left >= 4)
-    {
-        gpu_emit_column_group_chunk(first, 4);
-        first += 4;
-        left -= 4;
-    }
+    if (gpu_affine_batch_is_column)
+        R_Perf_CountGpuColumnBatch((unsigned int)lanes);
 
-    if (left == 3)
-    {
-        gpu_emit_column_group_chunk(first, 2);
-        gpu_emit_batched_column_lane(first + 2);
-    }
-    else if (left == 2)
-    {
-        gpu_emit_column_group_chunk(first, 2);
-    }
-    else if (left == 1)
-    {
-        gpu_emit_batched_column_lane(first);
-    }
-
-    R_Perf_CountGpuColumnBatch((unsigned int)lanes);
-    gpu_column_batch_count = 0;
-    gpu_pending = 1;
-    gpu_mark_framebuffer_gpu_dirty();
-}
-
-static void gpu_flush_column_var_batch(void)
-{
-    int lanes = gpu_column_var_batch_count;
-    int first = 0;
-    int left;
-
-    if (lanes <= 0)
-        return;
-
-    gpu_column_var_batch.lane_count = (uint8_t)lanes;
-
-    left = lanes;
-    while (left >= 4)
-    {
-        gpu_emit_varcount_group_chunk(first, 4);
-        first += 4;
-        left -= 4;
-    }
-
-    if (left == 3)
-    {
-        gpu_emit_varcount_group_chunk(first, 2);
-        gpu_emit_varcount_scalar_lane(first + 2);
-    }
-    else if (left == 2)
-    {
-        gpu_emit_varcount_scalar_lane(first);
-        gpu_emit_varcount_scalar_lane(first + 1);
-    }
-    else if (left == 1)
-    {
-        gpu_emit_varcount_scalar_lane(first);
-    }
-
-    R_Perf_CountGpuColumnBatch((unsigned int)lanes);
-    gpu_column_var_batch_count = 0;
-    gpu_pending = 1;
-    gpu_mark_framebuffer_gpu_dirty();
-}
-
-static void gpu_flush_column_batches(void)
-{
-    gpu_flush_column_batch();
-    gpu_flush_column_var_batch();
-}
-
-static void gpu_flush_span_batch(void)
-{
-    int count = gpu_span_batch_count;
-
-    if (count <= 0)
-        return;
-
-    for (int i = 0; i < count; i++)
-        of_gpu_draw_span(&gpu_span_batch[i]);
-
-    gpu_span_batch_count = 0;
+    gpu_affine_batch_count = 0;
+    gpu_affine_batch_is_column = 0;
     gpu_pending = 1;
     gpu_mark_framebuffer_gpu_dirty();
 }
 
 static void gpu_flush_draw_batches(void)
 {
-    gpu_flush_column_batches();
-    gpu_flush_span_batch();
+    gpu_flush_affine_batch();
 }
 
-static int gpu_can_batch_column(uint32_t fb_addr, uint16_t count,
-                                uint8_t flags, uint8_t colormap_id,
-                                int16_t fb_stride, int16_t lane_delta,
+static void gpu_add_affine_span(uint32_t fb_addr, int count,
+                                const byte *source, int32_t s, int32_t t,
+                                int32_t sstep, int32_t tstep,
+                                uint8_t light, uint8_t flags,
+                                uint8_t colormap_id, int32_t fb_step,
                                 uint16_t tex_width, uint16_t tex_w_mask,
-                                uint16_t tex_h_mask)
+                                uint16_t tex_h_mask, int is_column)
 {
-    uint32_t expected_fb;
+    uint32_t tex_addr = (uint32_t)(uintptr_t)source;
+    unsigned int lane;
 
-    if (gpu_column_batch_count <= 0)
-        return 1;
-    if (gpu_column_batch_count >= GPU_COLUMN_BATCH_LANES)
-        return 0;
-    if (gpu_column_batch.count != count)
-        return 0;
-    if (gpu_column_batch.flags != flags ||
-        gpu_column_batch.colormap_id != colormap_id ||
-        gpu_column_batch.fb_stride != fb_stride ||
-        gpu_column_batch.lane_delta != lane_delta ||
-        gpu_column_batch.tex_width != tex_width ||
-        gpu_column_batch.tex_w_mask != tex_w_mask ||
-        gpu_column_batch.tex_h_mask != tex_h_mask)
-        return 0;
+    if (!gpu_write_prepared)
+        gpu_prepare_for_gpu_write();
 
-    expected_fb = gpu_column_batch.fb_addr
-                + (uint32_t)((int32_t)lane_delta * gpu_column_batch_count);
-    return fb_addr == expected_fb;
-}
-
-static int gpu_can_batch_varcount_column(int x, int yl, int count,
-                                         uint8_t flags, uint8_t colormap_id,
-                                         int16_t fb_stride, int16_t lane_delta,
-                                         uint16_t tex_width,
-                                         uint16_t tex_w_mask,
-                                         uint16_t tex_h_mask)
-{
-    if (gpu_column_var_batch_count <= 0)
-        return 1;
-    if (gpu_column_var_batch_count >= GPU_COLUMN_BATCH_LANES)
-        return 0;
-    if (x != gpu_column_var_batch_base_x + gpu_column_var_batch_count)
-        return 0;
-    if (gpu_column_var_batch.flags != flags ||
-        gpu_column_var_batch.colormap_id != colormap_id ||
-        gpu_column_var_batch.fb_stride != fb_stride ||
-        gpu_column_var_batch.lane_delta != lane_delta ||
-        gpu_column_var_batch.tex_width != tex_width ||
-        gpu_column_var_batch.tex_w_mask != tex_w_mask ||
-        gpu_column_var_batch.tex_h_mask != tex_h_mask)
-        return 0;
-
-    if (yl >= gpu_column_var_batch_base_y)
-        return (yl - gpu_column_var_batch_base_y + count) <= 0xffff;
-
-    return (gpu_column_var_batch_base_y - yl + SCREENHEIGHT) <= 0xffff;
-}
-
-static void gpu_add_varcount_column(int x, int yl, int count,
-                                    const byte *source, int32_t t,
-                                    int32_t tstep, uint8_t light,
-                                    uint8_t flags, uint8_t colormap_id,
-                                    int16_t fb_stride, int16_t lane_delta,
-                                    uint16_t tex_width, uint16_t tex_w_mask,
-                                    uint16_t tex_h_mask)
-{
-    int lane;
-
-    gpu_flush_column_batch();
-
-    if (!gpu_can_batch_varcount_column(x, yl, count, flags, colormap_id,
-                                       fb_stride, lane_delta, tex_width,
-                                       tex_w_mask, tex_h_mask))
-        gpu_flush_column_var_batch();
-
-    if (gpu_column_var_batch_count == 0)
+    if (!gpu_can_batch_affine(flags, tex_width, tex_w_mask, tex_h_mask,
+                              fb_step, is_column))
     {
-        gpu_column_var_batch_base_x = x;
-        gpu_column_var_batch_base_y = yl;
-        gpu_column_var_batch.fb_addr =
-            gpu_framebuffer_addr(ylookup[yl] + columnofs[x]);
-        gpu_column_var_batch.flags = flags;
-        gpu_column_var_batch.colormap_id = colormap_id;
-        gpu_column_var_batch.fb_stride = fb_stride;
-        gpu_column_var_batch.lane_delta = lane_delta;
-        gpu_column_var_batch.tex_width = tex_width;
-        gpu_column_var_batch.tex_w_mask = tex_w_mask;
-        gpu_column_var_batch.tex_h_mask = tex_h_mask;
-    }
-    else if (yl < gpu_column_var_batch_base_y)
-    {
-        uint16_t delta = (uint16_t)(gpu_column_var_batch_base_y - yl);
-
-        for (int i = 0; i < gpu_column_var_batch_count; i++)
-            gpu_column_var_batch.y_start[i] += delta;
-
-        gpu_column_var_batch_base_y = yl;
-        gpu_column_var_batch.fb_addr =
-            gpu_framebuffer_addr(ylookup[yl] +
-                                 columnofs[gpu_column_var_batch_base_x]);
+        gpu_flush_affine_batch();
     }
 
-    lane = gpu_column_var_batch_count++;
-    gpu_column_var_batch.y_start[lane] =
-        (uint16_t)(yl - gpu_column_var_batch_base_y);
-    gpu_column_var_batch.count[lane] = (uint16_t)count;
-    gpu_column_var_batch.tex_addr[lane] = (uint32_t)(uintptr_t)source;
-    gpu_column_var_batch.t[lane] = t;
-    gpu_column_var_batch.tstep[lane] = tstep;
-    gpu_column_var_batch.light[lane] = light;
-    gpu_column_var_batch.lane_count = (uint8_t)gpu_column_var_batch_count;
+    if (gpu_affine_batch_count >= GPU_AFFINE_BATCH_LANES)
+        gpu_flush_affine_batch();
 
-    if (gpu_column_var_batch_count == GPU_COLUMN_BATCH_LANES)
-        gpu_flush_column_var_batch();
+    if (gpu_affine_batch_count == 0)
+    {
+        gpu_affine_batch.flags = flags;
+        gpu_affine_batch.reserved[0] = 0;
+        gpu_affine_batch.reserved[1] = 0;
+        gpu_affine_batch.tex_width = tex_width;
+        gpu_affine_batch.tex_w_mask = tex_w_mask;
+        gpu_affine_batch.tex_h_mask = tex_h_mask;
+        gpu_affine_batch.fb_step = fb_step;
+        gpu_affine_batch_is_column = is_column;
+    }
+
+    lane = (unsigned int)gpu_affine_batch_count;
+    if (lane >= GPU_AFFINE_BATCH_LANES)
+        return;
+
+    gpu_affine_batch_count = (int)lane + 1;
+    gpu_affine_batch.fb_addr[lane] = fb_addr;
+    gpu_affine_batch.tex_addr[lane] = tex_addr;
+    gpu_affine_batch.count[lane] = (uint16_t)count;
+    gpu_affine_batch.s[lane] = s;
+    gpu_affine_batch.t[lane] = t;
+    gpu_affine_batch.sstep[lane] = sstep;
+    gpu_affine_batch.tstep[lane] = tstep;
+    gpu_affine_batch.light[lane] = light;
+    gpu_affine_batch.colormap_id[lane] = colormap_id;
+    gpu_affine_batch.lane_count = (uint8_t)gpu_affine_batch_count;
+
+    if (gpu_affine_batch_count == GPU_AFFINE_BATCH_LANES)
+        gpu_flush_affine_batch();
+}
+
+static void gpu_add_column(int x, int yl, int count,
+                           const byte *source, int32_t t,
+                           int32_t tstep, uint8_t light,
+                           uint8_t flags, uint8_t colormap_id,
+                           uint16_t tex_width, uint16_t tex_w_mask,
+                           uint16_t tex_h_mask)
+{
+    uint32_t fb_addr = gpu_fb_row_addr[yl] + (uint32_t)x;
+
+    gpu_add_affine_span(fb_addr, count, source, 0, t, 0, tstep, light,
+                        flags, colormap_id, SCREENWIDTH, tex_width,
+                        tex_w_mask, tex_h_mask, 1);
 }
 
 static void gpu_finish_pending(void)
@@ -855,6 +699,8 @@ static void gpu_prepare_for_gpu_write(void)
 {
     if (!gpu_frame_active || I_VideoBuffer == NULL)
         return;
+    if (gpu_write_prepared)
+        return;
 
     if (gpu_cpu_dirty)
     {
@@ -871,6 +717,8 @@ static void gpu_prepare_for_gpu_write(void)
             gpu_cpu_dirty = 0;
         }
     }
+
+    gpu_write_prepared = 1;
 }
 
 static int gpu_colormap_row(const lighttable_t *map)
@@ -915,12 +763,14 @@ static void gpu_upload_fuzz_translucency(void)
                                sizeof(gpu_fuzz_transluc_table));
 }
 
-static uint32_t gpu_framebuffer_addr(pixel_t *ptr)
+static void gpu_set_framebuffer_base(uint8_t *base)
 {
-    if (gpu_flip_enabled && gpu_draw_render_base != NULL)
-        return (uint32_t)((uintptr_t)ptr + gpu_framebuffer_delta);
+    uint32_t fb_addr = (uint32_t)(uintptr_t)base;
 
-    return (uint32_t)(uintptr_t)ptr;
+    of_gpu_set_framebuffer(fb_addr, SCREENWIDTH);
+
+    for (int y = 0; y < SCREENHEIGHT; y++)
+        gpu_fb_row_addr[y] = fb_addr + (uint32_t)(y * SCREENWIDTH);
 }
 
 static int32_t gpu_column_t_start_direct(int yl, int texturemid, int iscale)
@@ -936,21 +786,19 @@ void R_GPU_Init(void)
     gpu_pending = 0;
     gpu_cpu_dirty = 0;
     gpu_colormap_rows = 0;
-    gpu_fuzz_transluc_enabled = 0;
     gpu_fuzz_batch_active = 0;
-    gpu_plane_spans_enabled = 1;
     gpu_flip_enabled = 0;
     gpu_draw_idx = -1;
     gpu_clear_pending_acquire();
     gpu_display_frame_active = 0;
     gpu_framebuffer_cpu_ready = 1;
+    gpu_write_prepared = 0;
     gpu_draw_fb = NULL;
     gpu_draw_render_base = NULL;
     gpu_framebuffer_delta = 0;
     gpu_deferred_lump_count = 0;
-    gpu_column_batch_count = 0;
-    gpu_column_var_batch_count = 0;
-    gpu_span_batch_count = 0;
+    gpu_affine_batch_count = 0;
+    gpu_affine_batch_is_column = 0;
     gpu_reset_cpu_cache_tracking();
 
     if (!r_gpu_enabled || M_CheckParm("-nogpu") > 0)
@@ -964,6 +812,11 @@ void R_GPU_Init(void)
     }
 
     of_gpu_init();
+    if (!gpu_probe_affine_span_group())
+    {
+        of_gpu_shutdown();
+        return;
+    }
 
     lumpindex_t lump = W_GetNumForName("COLORMAP");
     int cmap_size = W_LumpLength(lump);
@@ -976,24 +829,14 @@ void R_GPU_Init(void)
      * Doom's palette remap rows into the fabric palookup table. */
     of_cache_flush();
     of_gpu_palookup_upload(0, colormaps, (uint32_t)cmap_size);
-    /* The current span GPU exposes fuzz through OF_GPU_SPAN_TRANSLUC.
-     * Some firmware builds do not advertise the older OF_HW_GPU_ALPHA
-     * capability bit even though span translucency is wired, so do not gate
-     * Doom's spectre path on that stale bit. */
-    gpu_fuzz_transluc_enabled = M_CheckParm("-nogpufuzz") <= 0;
-    if (gpu_fuzz_transluc_enabled)
-        gpu_upload_fuzz_translucency();
+    gpu_upload_fuzz_translucency();
     of_cache_flush_range(gpu_fuzz_source_tex, sizeof(gpu_fuzz_source_tex));
     GPU_TEX_FLUSH = 1;
 
     gpu_present = 1;
-    gpu_plane_spans_enabled = M_CheckParm("-nogpuplanes") <= 0;
 
-    if (M_CheckParm("-nogpuflip") <= 0)
-    {
-        gpu_draw_idx = of_video_acquire_next(-1, 0);
-        gpu_flip_enabled = gpu_draw_idx >= 0;
-    }
+    gpu_draw_idx = of_video_acquire_next(-1, 0);
+    gpu_flip_enabled = gpu_draw_idx >= 0;
 
 }
 
@@ -1016,9 +859,8 @@ void R_GPU_Shutdown(void)
     gpu_draw_fb = NULL;
     gpu_draw_render_base = NULL;
     gpu_framebuffer_delta = 0;
-    gpu_column_batch_count = 0;
-    gpu_column_var_batch_count = 0;
-    gpu_span_batch_count = 0;
+    gpu_affine_batch_count = 0;
+    gpu_affine_batch_is_column = 0;
     gpu_reset_cpu_cache_tracking();
     gpu_present = 0;
 }
@@ -1084,6 +926,7 @@ void R_GPU_BeginFrame(void)
 
     gpu_finish_pending();
     gpu_frame_active = 1;
+    gpu_write_prepared = 0;
 
     /* Direct-FB mode now lets CPU HUD/menu drawing use the cached alias.
      * If status/border code dirtied lines before the 3D view starts, publish
@@ -1103,12 +946,11 @@ void R_GPU_BeginFrame(void)
         of_cache_flush_range(I_VideoBuffer, SCREENWIDTH * SCREENHEIGHT);
         R_Perf_EndStage(R_PERF_STAGE_CACHE, cache_start);
     }
-    of_gpu_set_framebuffer((uint32_t)(uintptr_t)
-                           (gpu_flip_enabled && gpu_draw_render_base != NULL
-                            ? gpu_draw_render_base
-                            : (uint8_t *)I_VideoBuffer),
-                           SCREENWIDTH);
+    gpu_set_framebuffer_base(gpu_flip_enabled && gpu_draw_render_base != NULL
+                             ? gpu_draw_render_base
+                             : (uint8_t *)I_VideoBuffer);
     gpu_framebuffer_cpu_ready = 1;
+    gpu_write_prepared = 1;
 }
 
 void R_GPU_EndFrame(void)
@@ -1130,6 +972,7 @@ void R_GPU_EndFrame(void)
         }
     }
     gpu_frame_active = 0;
+    gpu_write_prepared = 0;
     gpu_release_deferred_lumps();
 }
 
@@ -1185,6 +1028,7 @@ void R_GPU_PrepareForCPUAccessRect(int x, int y, int w, int h)
             R_Perf_EndStage(R_PERF_STAGE_CACHE, cache_start);
         }
         gpu_cpu_dirty = 1;
+        gpu_write_prepared = 0;
     }
 }
 
@@ -1266,8 +1110,7 @@ boolean R_GPU_DrawColumnDirect(int x, int yl, int yh, const byte *source,
 
 static boolean gpu_can_draw_fuzz(void)
 {
-    return gpu_present && gpu_frame_active && gpu_fuzz_transluc_enabled
-        && I_VideoBuffer != NULL;
+    return gpu_present && gpu_frame_active && I_VideoBuffer != NULL;
 }
 
 boolean R_GPU_CanDrawFuzz(void)
@@ -1280,7 +1123,8 @@ boolean R_GPU_BeginFuzzSpans(void)
     if (!gpu_can_draw_fuzz())
         return false;
 
-    gpu_prepare_for_gpu_write();
+    if (!gpu_write_prepared)
+        gpu_prepare_for_gpu_write();
     gpu_flush_draw_batches();
     gpu_fuzz_batch_active = 1;
     return true;
@@ -1308,13 +1152,8 @@ boolean R_GPU_DrawFuzzColumnDirect(int x, int yl, int yh)
     if (timing_enabled)
         submit_start = R_Perf_NowUS();
 
-    if (!gpu_fuzz_batch_active)
-        gpu_prepare_for_gpu_write();
-    gpu_flush_span_batch();
-
-    gpu_add_varcount_column(x, yl, count, gpu_fuzz_source_tex, 0, 0, 0,
-                            OF_GPU_SPAN_TRANSLUC, 0, SCREENWIDTH, 1,
-                            1, 0, 0);
+    gpu_add_column(x, yl, count, gpu_fuzz_source_tex, 0, 0, 0,
+                   OF_GPU_SPAN_TRANSLUC, 0, 1, 0, 0);
 
     R_Perf_CountGpuColumn((unsigned int)count);
     R_Perf_CountFuzzSpan(timing_enabled ? R_Perf_NowUS() - submit_start : 0,
@@ -1335,12 +1174,10 @@ boolean R_GPU_DrawColumnLightDirect(int x, int yl, int yh, const byte *source,
     if (light < 0 || light > 63)
         return false;
 
-    gpu_prepare_for_gpu_write();
-    gpu_flush_span_batch();
-    gpu_add_varcount_column(x, yl, count, source,
-                            gpu_column_t_start_direct(yl, texturemid, iscale),
-                            iscale, (uint8_t)light, OF_GPU_SPAN_COLORMAP,
-                            0, SCREENWIDTH, 1, 1, 0, 127);
+    gpu_add_column(x, yl, count, source,
+                   gpu_column_t_start_direct(yl, texturemid, iscale),
+                   iscale, (uint8_t)light, OF_GPU_SPAN_COLORMAP, 0,
+                   1, 0, 127);
 
     R_Perf_CountGpuColumn((unsigned int)count);
     return true;
@@ -1353,8 +1190,6 @@ boolean R_GPU_DrawColumnLightBatchDirect(int x, int yl, int yh, int lanes,
                                          const uint8_t *light)
 {
     int count = yh - yl + 1;
-    uint32_t fb_addr;
-    uint16_t gpu_count;
 
     if (!gpu_present || !gpu_frame_active || I_VideoBuffer == NULL)
         return false;
@@ -1371,44 +1206,10 @@ boolean R_GPU_DrawColumnLightBatchDirect(int x, int yl, int yh, int lanes,
             return false;
     }
 
-    gpu_prepare_for_gpu_write();
-    gpu_flush_span_batch();
-    gpu_flush_column_var_batch();
-
-    fb_addr = gpu_framebuffer_addr(ylookup[yl] + columnofs[x]);
-    gpu_count = (uint16_t)count;
-
     for (int i = 0; i < lanes; i++)
     {
-        uint32_t lane_fb_addr = fb_addr + (uint32_t)i;
-
-        if (!gpu_can_batch_column(lane_fb_addr, gpu_count,
-                                  OF_GPU_SPAN_COLORMAP,
-                                  0, SCREENWIDTH, 1, 1, 0, 127))
-            gpu_flush_column_batch();
-
-        if (gpu_column_batch_count == 0)
-        {
-            gpu_column_batch.fb_addr = lane_fb_addr;
-            gpu_column_batch.count = gpu_count;
-            gpu_column_batch.flags = OF_GPU_SPAN_COLORMAP;
-            gpu_column_batch.colormap_id = 0;
-            gpu_column_batch.fb_stride = SCREENWIDTH;
-            gpu_column_batch.lane_delta = 1;
-            gpu_column_batch.tex_width = 1;
-            gpu_column_batch.tex_w_mask = 0;
-            gpu_column_batch.tex_h_mask = 127;
-        }
-
-        int lane = gpu_column_batch_count++;
-        gpu_column_batch.tex_addr[lane] = (uint32_t)(uintptr_t)source[i];
-        gpu_column_batch.t[lane] = t[i];
-        gpu_column_batch.tstep[lane] = tstep[i];
-        gpu_column_batch.light[lane] = light[i];
-        gpu_column_batch.lane_count = (uint8_t)gpu_column_batch_count;
-
-        if (gpu_column_batch_count == GPU_COLUMN_BATCH_LANES)
-            gpu_flush_column_batch();
+        gpu_add_column(x + i, yl, count, source[i], t[i], tstep[i],
+                       light[i], OF_GPU_SPAN_COLORMAP, 0, 1, 0, 127);
     }
 
     R_Perf_CountGpuColumns((unsigned int)lanes,
@@ -1455,15 +1256,11 @@ boolean R_GPU_DrawColumnLightVarBatchDirect(int x, int lanes,
         return R_GPU_DrawColumnLightBatchDirect(x, yl[0], yh[0], lanes,
                                                 source, t, tstep, light);
 
-    gpu_prepare_for_gpu_write();
-    gpu_flush_span_batch();
-
     for (int i = 0; i < lanes; i++)
     {
-        gpu_add_varcount_column(x + i, yl[i], yh[i] - yl[i] + 1,
-                                source[i], t[i], tstep[i], light[i],
-                                OF_GPU_SPAN_COLORMAP, 0, SCREENWIDTH, 1,
-                                1, 0, 127);
+        gpu_add_column(x + i, yl[i], yh[i] - yl[i] + 1, source[i], t[i],
+                       tstep[i], light[i], OF_GPU_SPAN_COLORMAP, 0,
+                       1, 0, 127);
     }
 
     R_Perf_CountGpuColumns((unsigned int)lanes, pixels);
@@ -1494,37 +1291,15 @@ boolean R_GPU_DrawSpanLightDirect(int y, int x1, int x2, const byte *source,
     int count = x2 - x1 + 1;
     if (!gpu_present || !gpu_frame_active || I_VideoBuffer == NULL)
         return false;
-    if (!gpu_plane_spans_enabled)
-        return false;
     if (count <= 0 || count > 4095 || source == NULL)
         return false;
     if (light < 0 || light > 63)
         return false;
 
-    if (gpu_span_batch_count == 0)
-    {
-        gpu_prepare_for_gpu_write();
-        gpu_flush_column_batches();
-    }
-
-    of_gpu_span_t *span = &gpu_span_batch[gpu_span_batch_count++];
-    span->fb_addr = gpu_framebuffer_addr(ylookup[y] + columnofs[x1]);
-    span->tex_addr = (uint32_t)(uintptr_t)source;
-    span->s = xfrac;
-    span->t = yfrac;
-    span->sstep = xstep;
-    span->tstep = ystep;
-    span->count = (uint16_t)count;
-    span->light = (uint8_t)light;
-    span->flags = OF_GPU_SPAN_COLORMAP;
-    span->colormap_id = 0;
-    span->fb_stride = 1;
-    span->tex_width = 64;
-    span->tex_w_mask = 63;
-    span->tex_h_mask = 63;
-
-    if (gpu_span_batch_count == GPU_SPAN_BATCH_SPANS)
-        gpu_flush_span_batch();
+    gpu_add_affine_span(gpu_fb_row_addr[y] + (uint32_t)x1, count, source,
+                        xfrac, yfrac, xstep, ystep,
+                        (uint8_t)light, OF_GPU_SPAN_COLORMAP, 0, 1,
+                        64, 63, 63, 0);
 
     R_Perf_CountGpuSpan((unsigned int)count);
     return true;

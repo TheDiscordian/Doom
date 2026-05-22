@@ -52,6 +52,38 @@ CFLAGS += -Wno-maybe-uninitialized -Wno-address
 # chocolate-doom uses many old-style prototypes / pre-C99 patterns
 CFLAGS += -Wno-strict-prototypes -Wno-old-style-definition
 
+# Keep hot renderer code inside APP_BRAM.  The SDK default 64-byte function
+# alignment over-pads this app now that the renderer has more GPU paths.
+CFLAGS += -falign-functions=16 -falign-loops=16
+
+# Optional renderer instrumentation.  Keep counters off for release timing:
+#   make PERF=1          # enable render pipeline counters
+#   make TRACES=1        # pacing/fuzz/slow traces; use -pacingtrace, etc.
+#   make PERFDETAIL=1    # PERF plus hot-loop BSP/plane work counters
+#   make PERFTIMING=1    # PERFDETAIL plus microsecond timings; heaviest mode
+PERF ?= 0
+ifeq ($(PERF),1)
+CFLAGS += -DR_RENDER_PERF=1
+endif
+
+ifeq ($(TRACES),1)
+CFLAGS += -DR_RUNTIME_TRACES=1
+endif
+
+ifeq ($(PERFDETAIL),1)
+CFLAGS += -DR_RENDER_PERF=1 -DR_RENDER_PERF_DETAIL=1
+endif
+
+ifeq ($(PERFTIMING),1)
+CFLAGS += -DR_RENDER_PERF=1 -DR_RENDER_PERF_DETAIL=1 -DR_RENDER_PERF_DETAIL_TIMING=1
+endif
+
+ifeq ($(PERFTIMING),1)
+# Timing probes are heavier than count-only detail; use the tightest
+# alignment so the diagnostic build remains linkable.
+CFLAGS += -falign-functions=4 -falign-loops=4
+endif
+
 .DEFAULT_GOAL := all
 
 include $(SDK_DIR)/sdk.mk

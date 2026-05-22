@@ -76,7 +76,6 @@ static grabmouse_callback_t grabmouse_cb;
 #define GPU_PACE_SAMPLES 32
 #define GPU_PACE_WARMUP_SAMPLES 8
 #define GPU_PACE_MIN_US 16667u
-#define GPU_PACE_FINE_VRR_MIN_US 19000u
 #define GPU_PACE_MAX_US 23800u
 #define GPU_PACE_MARGIN_US 1000u
 #define GPU_PACE_WAIT_CAP_US 1000u
@@ -266,7 +265,6 @@ static void I_UpdateFineVRR(unsigned int target_us)
 static unsigned int I_UpdateAdaptivePaceTarget(unsigned int sample_us)
 {
     unsigned int desired_us;
-    unsigned int min_target_us;
 
     if (sample_us == 0)
         sample_us = GPU_PACE_MIN_US;
@@ -280,12 +278,8 @@ static unsigned int I_UpdateAdaptivePaceTarget(unsigned int sample_us)
         gpu_pace.sample_count++;
 
     desired_us = I_AdaptivePacePercentile() + GPU_PACE_MARGIN_US;
-    min_target_us = gpu_pace.fine_vrr_enabled
-                  ? GPU_PACE_FINE_VRR_MIN_US
-                  : GPU_PACE_MIN_US;
-
-    if (desired_us < min_target_us)
-        desired_us = min_target_us;
+    if (desired_us < GPU_PACE_MIN_US)
+        desired_us = GPU_PACE_MIN_US;
     if (desired_us > GPU_PACE_MAX_US)
         desired_us = GPU_PACE_MAX_US;
 

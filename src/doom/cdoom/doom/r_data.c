@@ -461,6 +461,18 @@ R_GetColumn
     return texturecomposite[tex] + ofs;
 }
 
+byte **R_GetColumnTable(int tex)
+{
+    if (texturecolumnptr[tex] == NULL)
+        R_BuildTextureColumnPointers(tex);
+
+    return texturecolumnptr[tex];
+}
+
+int R_GetTextureWidthMask(int tex)
+{
+    return texturewidthmask[tex];
+}
 
 static void GenerateTextureHashTable(void)
 {

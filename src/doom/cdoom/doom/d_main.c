@@ -162,6 +162,15 @@ void D_ProcessEvents (void)
 // wipegamestate can be set to -1 to force a wipe on the next draw
 gamestate_t     wipegamestate = GS_DEMOSCREEN;
 
+static void D_ClearMenuResidueFrame(void)
+{
+    if (I_VideoBuffer == NULL)
+        return;
+
+    R_GPU_PrepareForCPUAccess();
+    memset(I_VideoBuffer, 0, SCREENWIDTH * SCREENHEIGHT * sizeof(*I_VideoBuffer));
+}
+
 boolean D_Display (void)
 {
     static  boolean		viewactivestate = false;
@@ -169,6 +178,7 @@ boolean D_Display (void)
     static  boolean		inhelpscreensstate = false;
     static  boolean		fullscreen = false;
     static  gamestate_t		oldgamestate = -1;
+    static  int                 postmenuclearframes = 0;
     static  int			borderdrawcount;
     int				y;
     boolean			wipe;
@@ -177,7 +187,6 @@ boolean D_Display (void)
     unsigned int                display_start;
 
     R_Perf_FrameStart();
-    R_Perf_PacingFrameStart();
     display_start = R_Perf_BeginStage();
     redrawsbar = false;
     drawstatusbar_after_view = false;
@@ -200,6 +209,14 @@ boolean D_Display (void)
 	wipe = false;
 
     R_GPU_BeginDisplayFrame();
+    // Exclude draw-buffer acquire/fence waits from adaptive VRR samples.
+    R_Perf_PacingFrameStart();
+
+    if (gamestate == GS_LEVEL && gametic && !automapactive
+     && menuactivestate && !menuactive)
+    {
+        postmenuclearframes = 4;
+    }
 
     if (gamestate == GS_LEVEL && gametic)
 	HU_Erase();
@@ -242,10 +259,21 @@ boolean D_Display (void)
     // draw the view directly
     if (gamestate == GS_LEVEL && !automapactive && gametic)
     {
+        if (postmenuclearframes > 0)
+        {
+            D_ClearMenuResidueFrame();
+            postmenuclearframes--;
+            redrawsbar = true;
+        }
+
 	R_GPU_BeginFrame ();
 	R_RenderPlayerView (&players[displayplayer]);
 	if (drawstatusbar_after_view)
 	    ST_Drawer (viewheight == SCREENHEIGHT, redrawsbar );
+    }
+    else if (gamestate != GS_LEVEL || automapactive)
+    {
+        postmenuclearframes = 0;
     }
 
     if (gamestate == GS_LEVEL && gametic)
@@ -448,9 +476,10 @@ void D_RunFrame()
 
         wipestart = nowtime;
         R_Perf_FrameStart();
-        R_Perf_PacingFrameStart();
         display_start = R_Perf_BeginStage();
         R_GPU_BeginDisplayFrame();
+        // Exclude draw-buffer acquire/fence waits from adaptive VRR samples.
+        R_Perf_PacingFrameStart();
         wipe = !wipe_ScreenWipe(wipe_Melt
                                , 0, 0, SCREENWIDTH, SCREENHEIGHT, tics);
         I_UpdateNoBlit ();
@@ -476,6 +505,9 @@ void D_RunFrame()
                     || M_CheckParm("-capped") > 0;
         }
 
+        // Pocket builds always use interpolated uncapped rendering unless
+        // explicitly disabled from the command line.
+        crispy_uncapped = true;
         simulation_paused = paused
                             || (!netgame
                                 && menuactive
