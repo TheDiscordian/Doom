@@ -75,6 +75,8 @@ byte		translations[3][256];
 // surrounding background.
 
 static pixel_t *background_buffer = NULL;
+static unsigned int background_generation = 1;
+static unsigned int border_slot_generation[3];
 
 
 //
@@ -831,6 +833,30 @@ void R_RetargetBuffer(void)
     for (i=0 ; i<viewheight ; i++, row += SCREENWIDTH)
 	ylookup[i] = row;
 }
+
+void R_MarkViewBorderDirty(void)
+{
+    background_generation++;
+    if (background_generation == 0)
+    {
+        background_generation = 1;
+        memset(border_slot_generation, 0, sizeof(border_slot_generation));
+    }
+}
+
+boolean R_ViewBorderNeedsDraw(void)
+{
+    int slot;
+
+    if (scaledviewwidth == SCREENWIDTH)
+        return false;
+
+    slot = R_GPU_CurrentDrawSlot();
+    if (slot < 0 || slot >= arrlen(border_slot_generation))
+        return false;
+
+    return border_slot_generation[slot] != background_generation;
+}
  
  
 
@@ -868,6 +894,7 @@ void R_FillBackScreen (void)
             background_buffer = NULL;
         }
 
+        R_MarkViewBorderDirty();
 	return;
     }
 
@@ -941,6 +968,7 @@ void R_FillBackScreen (void)
                 W_CacheLumpName(DEH_String("brdr_br"),PU_CACHE));
 
     V_RestoreBuffer();
+    R_MarkViewBorderDirty();
 } 
  
 
@@ -977,6 +1005,7 @@ void R_DrawViewBorder (void)
     int		side;
     int		ofs;
     int		i; 
+    int         slot;
  
     if (scaledviewwidth == SCREENWIDTH) 
 	return; 
@@ -1003,6 +1032,10 @@ void R_DrawViewBorder (void)
 
     // ? 
     V_MarkRect (0,0,SCREENWIDTH, SCREENHEIGHT-SBARHEIGHT); 
+
+    slot = R_GPU_CurrentDrawSlot();
+    if (slot >= 0 && slot < arrlen(border_slot_generation))
+        border_slot_generation[slot] = background_generation;
 } 
  
  

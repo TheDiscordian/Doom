@@ -1,12 +1,13 @@
-/* i_joystick.c — openfpgaOS has no generic joystick layer (gamepad
- * is handled in i_input.c directly).  Stub out the interface. */
+/* i_joystick.c — openfpgaOS gamepad state is translated to Doom events
+ * in i_input.c.  Keep Chocolate's joystick config variables bound so
+ * the game code uses its normal analog ticcmd path. */
 
 #include "doomtype.h"
 #include "i_joystick.h"
 #include "m_config.h"
 
-int  use_analog;
-int  usejoystick;
+int  use_analog = 1;
+int  usejoystick = 1;
 char *joystick_guid = "";
 int   joystick_index = -1;
 int   joystick_x_axis;
@@ -22,7 +23,12 @@ int   joystick_turn_sensitivity = 10;
 int   joystick_move_sensitivity = 10;
 int   joystick_look_sensitivity = 10;
 
-void I_InitJoystick(void)      { }
+void I_InitJoystick(void)
+{
+    usejoystick = 1;
+    use_analog = 1;
+}
+
 void I_ShutdownJoystick(void) { }
 void I_UpdateJoystick(void)   { }
 

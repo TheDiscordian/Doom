@@ -104,6 +104,9 @@ void R_FillBackScreen (void);
 // If the view size is not full screen, draws a border around it.
 void R_DrawViewBorder (void);
 
+void R_MarkViewBorderDirty(void);
+boolean R_ViewBorderNeedsDraw(void);
+
 
 
 #endif

@@ -1,0 +1,27 @@
+{
+    "instance": {
+        "magic": "APF_VER_1",
+        "variant_select": {
+            "id": 666,
+            "select": false
+        },
+        "data_slots": [
+            { "id": 1, "filename": "os.bin" },
+            { "id": 2, "filename": "doom.elf" },
+            { "id": 3, "filename": "chex.wad" },
+            { "id": 7, "filename": "bank.ofsf" },
+            { "id": 9, "filename": "chex/ChexQuest.cfg" },
+            { "id": 10, "filename": "chex/ChexQuest_0.sav" },
+            { "id": 11, "filename": "chex/ChexQuest_1.sav" },
+            { "id": 12, "filename": "chex/ChexQuest_2.sav" },
+            { "id": 13, "filename": "chex/ChexQuest_3.sav" },
+            { "id": 14, "filename": "chex/ChexQuest_4.sav" },
+            { "id": 15, "filename": "chex/ChexQuest_5.sav" },
+            { "id": 16, "filename": "chex/ChexQuest_6.sav" },
+            { "id": 17, "filename": "chex/ChexQuest_7.sav" },
+            { "id": 18, "filename": "chex/ChexQuest_8.sav" },
+            { "id": 19, "filename": "chex/ChexQuest_9.sav" },
+            { "id": 20, "filename": "chex/ChexQuest.sav" }
+        ]
+    }
+}

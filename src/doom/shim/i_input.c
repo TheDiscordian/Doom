@@ -14,8 +14,10 @@
 #include "d_event.h"
 #include "doomkeys.h"
 #include "i_input.h"
+#include "i_joystick.h"
 #include "doomtype.h"
 #include "doomstat.h"
+#include "m_fixed.h"
 
 #include <string.h>
 
@@ -24,6 +26,8 @@
 #define KEY_TAP_USE        ' '
 #define KEY_HOLD_RUN       KEY_RSHIFT
 #define KEY_MENU_BACK      KEY_BACKSPACE
+#define STICK_DEADZONE     4096
+#define STICK_MENU_THRESH  (FRACUNIT / 2)
 
 static uint32_t prev_buttons;
 static int b_mode;
@@ -54,6 +58,93 @@ static void post_key(int key, int down)
     ev.type = down ? ev_keydown : ev_keyup;
     ev.data1 = key;
     if (down && key >= 32 && key < 127) { ev.data2 = key; ev.data3 = key; }
+    D_PostEvent(&ev);
+}
+
+static int abs_int(int v)
+{
+    return v < 0 ? -v : v;
+}
+
+static int normalize_axis(int16_t axis)
+{
+    int v = axis;
+    int sign;
+    int mag;
+    int denom;
+    int out;
+
+    if (v > -STICK_DEADZONE && v < STICK_DEADZONE)
+    {
+        return 0;
+    }
+
+    sign = v < 0 ? -1 : 1;
+    mag = abs_int(v) - STICK_DEADZONE;
+    denom = 32767 - STICK_DEADZONE;
+    out = (int) (((int64_t) mag * FRACUNIT + denom / 2) / denom);
+
+    if (out > FRACUNIT)
+    {
+        out = FRACUNIT;
+    }
+
+    return sign * out;
+}
+
+static unsigned stick_dir(int x, int y)
+{
+    unsigned dir = JOY_DIR_NONE;
+
+    if (y <= -STICK_MENU_THRESH)
+    {
+        dir |= JOY_DIR_UP;
+    }
+    else if (y >= STICK_MENU_THRESH)
+    {
+        dir |= JOY_DIR_DOWN;
+    }
+
+    if (x <= -STICK_MENU_THRESH)
+    {
+        dir |= JOY_DIR_LEFT;
+    }
+    else if (x >= STICK_MENU_THRESH)
+    {
+        dir |= JOY_DIR_RIGHT;
+    }
+
+    return dir;
+}
+
+static void post_joystick_axes(const of_input_state_t *s)
+{
+    event_t ev;
+    int lx = normalize_axis(s->joy_lx);
+    int ly = normalize_axis(s->joy_ly);
+    int rx = normalize_axis(s->joy_rx);
+    int ry = normalize_axis(s->joy_ry);
+    int turn = rx;
+    int strafe = lx;
+
+    /* If the controller only has a left stick, preserve the classic Doom
+     * mapping: left/right turns unless the strafe button is held.  With a
+     * right stick, use the modern split of left-stick strafe and right-stick
+     * turn. */
+    if (turn == 0)
+    {
+        turn = lx;
+        strafe = 0;
+    }
+
+    memset(&ev, 0, sizeof(ev));
+    ev.type = ev_joystick;
+    ev.data2 = turn;
+    ev.data3 = ly;
+    ev.data4 = strafe;
+    ev.data5 = ry;
+    ev.data6 = stick_dir(lx, ly) << LSTICK_SHIFT
+             | stick_dir(rx, ry) << RSTICK_SHIFT;
     D_PostEvent(&ev);
 }
 
@@ -186,6 +277,8 @@ void I_PollInput(void)
         if (down & BTN_MAP[i].mask) post_key(BTN_MAP[i].key, 1);
         if (up   & BTN_MAP[i].mask) post_key(BTN_MAP[i].key, 0);
     }
+
+    post_joystick_axes(&s);
 
     prev_buttons = curr;
 }

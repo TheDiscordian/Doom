@@ -110,10 +110,8 @@ static boolean CanOpenFile(const char *filename)
     return true;
 }
 
-/* The Pocket kernel reports undeclared data slots as openable (returning
- * empty or stale content), so a bare CanOpenFile probe on slot:5 trips
- * the DEH parser on instances that only declare a PWAD. Verify the file
- * actually begins with a DeHackEd header before injecting `-deh`. */
+/* Only inject -deh for real DeHackEd text files. This also protects
+ * against user/custom instances that put a non-DEH file in slot 5. */
 static boolean LooksLikeDehFile(const char *filename)
 {
     static const char magic[] = "Patch File for DeHackEd";
@@ -131,20 +129,6 @@ static boolean LooksLikeDehFile(const char *filename)
     return got == sizeof(buf) && memcmp(buf, magic, sizeof(buf)) == 0;
 }
 
-static const char *FindReadableFile(const char *const *filenames,
-                                    size_t num_filenames,
-                                    const char *fallback)
-{
-    for (size_t i = 0; i < num_filenames; ++i)
-    {
-        if (CanOpenFile(filenames[i]))
-        {
-            return filenames[i];
-        }
-    }
-
-    return fallback;
-}
 #endif
 
 int main(int argc, char **argv)
@@ -171,53 +155,12 @@ int main(int argc, char **argv)
 #endif
 
     /* openfpgaOS port: the Pocket kernel has no mechanism to pass argv
-     * from instance.json. Prefer the APF filenames used by our instance
-     * files so Chocolate Doom can identify IWADs by name; fall back to
-     * slot aliases for user/custom instances. */
+     * from instance.json, so use the fixed data-slot contract.  Do not
+     * probe filenames in common: multiple instances can legitimately keep
+     * doom.wad, DOOM.WAD, DOOM2.WAD, etc. side by side. */
 #ifndef OF_PC
-    static const char *const iwad_candidates[] =
-    {
-        "doom.wad",
-        "doom1.wad",
-        "doomu.wad",
-        "doom/DOOM.WAD",
-        "doom2/DOOM2.WAD",
-        "plutonia/PLUTONIA.WAD",
-        "tnt/TNT.WAD",
-        "doomu/doomu.wad",
-        "DOOM.WAD",
-        "DOOM2.WAD",
-        "PLUTONIA.WAD",
-        "TNT.WAD",
-    };
-    static const char *const pwad_candidates[] =
-    {
-        "SIGIL_COMPAT_V1_23.wad",
-        "SIGIL_COMPAT_V1_21.wad",
-        "SIGIL_COMPAT_V1_2.wad",
-        "SIGIL_II_V1_0.WAD",
-        "sigil/SIGIL_COMPAT_V1_23.wad",
-        "sigil/SIGIL_COMPAT_V1_21.wad",
-        "sigil/SIGIL_COMPAT_V1_2.wad",
-        "sigil2/SIGIL_II_V1_0.WAD",
-        "sigil/SIGIL_COMPAT_v1_23.wad",
-        "sigil/SIGIL_COMPAT_v1_21.wad",
-        "sigil/SIGIL_COMPAT_v1_2.wad",
-        "sigil/SIGIL_COMPAT.wad",
-        "sigil/sigil_compat.wad",
-        "EARTH.WAD",
-        "earth/EARTH.WAD",
-        "TVR!.WAD",
-        "revolution/TVR!.WAD",
-        "TNT31.WAD",
-        "tnt/TNT31.WAD",
-    };
-    const char *iwad_file = FindReadableFile(iwad_candidates,
-                                             arrlen(iwad_candidates),
-                                             "slot:3");
-    const char *pwad_file = FindReadableFile(pwad_candidates,
-                                             arrlen(pwad_candidates),
-                                             NULL);
+    const char *iwad_file = "slot:3";
+    const char *pwad_file = CanOpenFile("slot:4") ? "slot:4" : NULL;
     const char *deh_file = NULL;
     int injected = 0;
     char *injected_argv[10];
@@ -226,11 +169,6 @@ int main(int argc, char **argv)
     injected_argv[injected++] = (char *) iwad_file;
     injected_argv[injected++] = "-noautoload";
 
-    if (pwad_file == NULL && CanOpenFile("slot:4"))
-    {
-        pwad_file = "slot:4";
-    }
-
     if (pwad_file != NULL)
     {
         injected_argv[injected++] = "-merge";
@@ -238,9 +176,7 @@ int main(int argc, char **argv)
         injected_argv[injected++] = "-dehlump";
     }
 
-    if (pwad_file != NULL
-     && strcmp(pwad_file, "slot:4") == 0
-     && LooksLikeDehFile("slot:5"))
+    if (pwad_file != NULL && LooksLikeDehFile("slot:5"))
     {
         deh_file = "slot:5";
     }

@@ -51,7 +51,7 @@
 #include "w_wad.h"
 #include "z_zone.h"
 
-#define DEFAULT_RAM 16 /* MiB */
+#define DEFAULT_RAM 32 /* MiB */
 #define MIN_RAM     4  /* MiB */
 
 /* openfpgaOS port: the zone allocator uses a static pool in SDRAM .bss
@@ -60,10 +60,11 @@
  * with native malloc each Z_Free returned memory to libc, and after
  * level/demo churn the heap had no contiguous 40 KB slot left.
  *
- * 16 MiB gives PWADs more lump-cache headroom and fits
- * comfortably inside the 48 MiB app SDRAM window (see src/sdk/app.ld).
+ * 32 MiB gives PWADs enough lump-cache headroom to keep more level
+ * resources resident and still fits inside the 48 MiB app SDRAM window
+ * with room left for stack/runtime state (see src/sdk/app.ld).
  * Alignment to 8 bytes matches z_zone.c's header layout. */
-#define OF_ZONE_BYTES (16 * 1024 * 1024)
+#define OF_ZONE_BYTES (32 * 1024 * 1024)
 /* Canary words immediately before/after the usable zone pool. If a
  * stray DMA, ISR stack overrun, or off-by-one scribbles over the zone
  * boundary, the canary flips and I_CheckZoneCanaries() will catch it

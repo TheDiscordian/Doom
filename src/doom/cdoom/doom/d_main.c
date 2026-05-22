@@ -293,12 +293,15 @@ boolean D_Display (void)
     // see if the border needs to be updated to the screen
     if (gamestate == GS_LEVEL && !automapactive && scaledviewwidth != SCREENWIDTH)
     {
+	if (menuactivestate && !menuactive)
+	    R_MarkViewBorderDirty();
 	if (menuactive || menuactivestate || !viewactivestate)
 	    borderdrawcount = 3;
-	if (borderdrawcount)
+	if (borderdrawcount || R_ViewBorderNeedsDraw())
 	{
 	    R_DrawViewBorder ();    // erase old menu stuff
-	    borderdrawcount--;
+	    if (borderdrawcount)
+		borderdrawcount--;
 	}
 
     }

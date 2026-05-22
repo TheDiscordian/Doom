@@ -1138,12 +1138,16 @@ void R_GPU_EndFuzzSpans(void)
 boolean R_GPU_DrawFuzzColumnDirect(int x, int yl, int yh)
 {
     int count = yh - yl + 1;
+    int screen_x = x + viewwindowx;
+    int screen_yl = yl + viewwindowy;
+    int screen_yh = yh + viewwindowy;
     unsigned int submit_start = 0;
     int timing_enabled;
 
     if (!gpu_can_draw_fuzz())
         return false;
-    if (x < 0 || x >= SCREENWIDTH || yl < 0 || yh >= SCREENHEIGHT)
+    if (screen_x < 0 || screen_x >= SCREENWIDTH ||
+        screen_yl < 0 || screen_yh >= SCREENHEIGHT)
         return false;
     if (count <= 0 || count > 4095)
         return false;
@@ -1152,7 +1156,7 @@ boolean R_GPU_DrawFuzzColumnDirect(int x, int yl, int yh)
     if (timing_enabled)
         submit_start = R_Perf_NowUS();
 
-    gpu_add_column(x, yl, count, gpu_fuzz_source_tex, 0, 0, 0,
+    gpu_add_column(screen_x, screen_yl, count, gpu_fuzz_source_tex, 0, 0, 0,
                    OF_GPU_SPAN_TRANSLUC, 0, 1, 0, 0);
 
     R_Perf_CountGpuColumn((unsigned int)count);
@@ -1165,16 +1169,20 @@ boolean R_GPU_DrawColumnLightDirect(int x, int yl, int yh, const byte *source,
                                     int texturemid, int iscale, int light)
 {
     int count = yh - yl + 1;
+    int screen_x = x + viewwindowx;
+    int screen_yl = yl + viewwindowy;
+    int screen_yh = yh + viewwindowy;
     if (!gpu_present || !gpu_frame_active || I_VideoBuffer == NULL)
         return false;
-    if (x < 0 || x >= SCREENWIDTH || yl < 0 || yh >= SCREENHEIGHT)
+    if (screen_x < 0 || screen_x >= SCREENWIDTH ||
+        screen_yl < 0 || screen_yh >= SCREENHEIGHT)
         return false;
     if (count <= 0 || count > 4095 || source == NULL)
         return false;
     if (light < 0 || light > 63)
         return false;
 
-    gpu_add_column(x, yl, count, source,
+    gpu_add_column(screen_x, screen_yl, count, source,
                    gpu_column_t_start_direct(yl, texturemid, iscale),
                    iscale, (uint8_t)light, OF_GPU_SPAN_COLORMAP, 0,
                    1, 0, 127);
@@ -1190,12 +1198,16 @@ boolean R_GPU_DrawColumnLightBatchDirect(int x, int yl, int yh, int lanes,
                                          const uint8_t *light)
 {
     int count = yh - yl + 1;
+    int screen_x = x + viewwindowx;
+    int screen_yl = yl + viewwindowy;
+    int screen_yh = yh + viewwindowy;
 
     if (!gpu_present || !gpu_frame_active || I_VideoBuffer == NULL)
         return false;
     if (lanes <= 0 || lanes > GPU_COLUMN_BATCH_LANES)
         return false;
-    if (x < 0 || x + lanes > SCREENWIDTH || yl < 0 || yh >= SCREENHEIGHT)
+    if (screen_x < 0 || screen_x + lanes > SCREENWIDTH ||
+        screen_yl < 0 || screen_yh >= SCREENHEIGHT)
         return false;
     if (count <= 0 || count > 4095)
         return false;
@@ -1208,7 +1220,7 @@ boolean R_GPU_DrawColumnLightBatchDirect(int x, int yl, int yh, int lanes,
 
     for (int i = 0; i < lanes; i++)
     {
-        gpu_add_column(x + i, yl, count, source[i], t[i], tstep[i],
+        gpu_add_column(screen_x + i, screen_yl, count, source[i], t[i], tstep[i],
                        light[i], OF_GPU_SPAN_COLORMAP, 0, 1, 0, 127);
     }
 
@@ -1227,24 +1239,27 @@ boolean R_GPU_DrawColumnLightVarBatchDirect(int x, int lanes,
 {
     unsigned int pixels = 0;
     int all_same_range = 1;
+    int screen_x = x + viewwindowx;
 
     if (!gpu_present || !gpu_frame_active || I_VideoBuffer == NULL)
         return false;
     if (lanes <= 0 || lanes > GPU_COLUMN_BATCH_LANES ||
         yl == NULL || yh == NULL)
         return false;
-    if (x < 0 || x + lanes > SCREENWIDTH)
+    if (screen_x < 0 || screen_x + lanes > SCREENWIDTH)
         return false;
 
     for (int i = 0; i < lanes; i++)
     {
         int count = yh[i] - yl[i] + 1;
+        int screen_yl = yl[i] + viewwindowy;
+        int screen_yh = yh[i] + viewwindowy;
 
         if (count <= 0 || count > 4095)
             return false;
         if (source[i] == NULL || light[i] > 63)
             return false;
-        if (yl[i] < 0 || yh[i] >= SCREENHEIGHT)
+        if (screen_yl < 0 || screen_yh >= SCREENHEIGHT)
             return false;
 
         if (yl[i] != yl[0] || yh[i] != yh[0])
@@ -1258,7 +1273,8 @@ boolean R_GPU_DrawColumnLightVarBatchDirect(int x, int lanes,
 
     for (int i = 0; i < lanes; i++)
     {
-        gpu_add_column(x + i, yl[i], yh[i] - yl[i] + 1, source[i], t[i],
+        gpu_add_column(screen_x + i, yl[i] + viewwindowy,
+                       yh[i] - yl[i] + 1, source[i], t[i],
                        tstep[i], light[i], OF_GPU_SPAN_COLORMAP, 0,
                        1, 0, 127);
     }
@@ -1289,14 +1305,20 @@ boolean R_GPU_DrawSpanLightDirect(int y, int x1, int x2, const byte *source,
                                   fixed_t xstep, fixed_t ystep, int light)
 {
     int count = x2 - x1 + 1;
+    int screen_x1 = x1 + viewwindowx;
+    int screen_x2 = x2 + viewwindowx;
+    int screen_y = y + viewwindowy;
     if (!gpu_present || !gpu_frame_active || I_VideoBuffer == NULL)
         return false;
     if (count <= 0 || count > 4095 || source == NULL)
         return false;
     if (light < 0 || light > 63)
         return false;
+    if (screen_x1 < 0 || screen_x2 >= SCREENWIDTH ||
+        screen_y < 0 || screen_y >= SCREENHEIGHT)
+        return false;
 
-    gpu_add_affine_span(gpu_fb_row_addr[y] + (uint32_t)x1, count, source,
+    gpu_add_affine_span(gpu_fb_row_addr[screen_y] + (uint32_t)screen_x1, count, source,
                         xfrac, yfrac, xstep, ystep,
                         (uint8_t)light, OF_GPU_SPAN_COLORMAP, 0, 1,
                         64, 63, 63, 0);
