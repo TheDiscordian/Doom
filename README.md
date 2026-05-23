@@ -2,7 +2,7 @@
 
 Chocolate Doom port for the Analogue Pocket using openfpgaOS.
 
-Current release: `1.1.2` (`2026-05-22`).
+Current release: `1.1.3` (`2026-05-23`).
 
 This repository contains the Doom custom core, the openfpgaOS SDK subset it
 builds against, instance files, runtime binaries, and the Doom-specific shims
@@ -190,10 +190,12 @@ New save names default to the current map name.
 | Y | Previous weapon |
 | L1 | Strafe left |
 | R1 | Strafe right |
+| L2 | Use/open |
+| R2 | Fire |
 | Start | Menu/Escape |
 | Select | Automap |
-| Left stick | Move, or strafe when right stick is active |
-| Right stick | Turn |
+| Left stick | Analog turn and forward/back; full push engages run |
+| Right stick | Analog strafe left/right |
 
 The joystick variables are bound through Chocolate Doom's normal config system,
 but analog input is enabled by default for Pocket.

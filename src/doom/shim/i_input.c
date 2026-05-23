@@ -2,12 +2,15 @@
  *
  * Button mapping:
  *   D-pad        -> arrow keys
- *   A            -> ENTER  (menu confirm / fire via key bind)
+ *   A            -> ENTER  (menu confirm)
  *   B            -> hold run; tap/release within 500 ms for use/open
  *   X / Y        -> next / previous weapon
  *   L1 / R1      -> strafe left / right
+ *   L2 / R2      -> use/open / fire
  *   START        -> ESC
  *   SELECT       -> TAB (map)
+ *   Left stick   -> analog turn + forward/back
+ *   Right stick  -> analog strafe left/right
  */
 
 #include "of.h"
@@ -15,6 +18,7 @@
 #include "doomkeys.h"
 #include "i_input.h"
 #include "i_joystick.h"
+#include "m_controls.h"
 #include "doomtype.h"
 #include "doomstat.h"
 #include "m_fixed.h"
@@ -24,10 +28,12 @@
 #define B_TAP_USE_MS       500
 #define TAP_USE_HOLD_MS    80
 #define KEY_TAP_USE        ' '
+#define KEY_POCKET_FIRE    KEY_RCTRL
 #define KEY_HOLD_RUN       KEY_RSHIFT
 #define KEY_MENU_BACK      KEY_BACKSPACE
 #define STICK_DEADZONE     4096
 #define STICK_MENU_THRESH  (FRACUNIT / 2)
+#define STICK_RUN_THRESH   ((FRACUNIT * 7) / 8)
 
 static uint32_t prev_buttons;
 static int b_mode;
@@ -47,6 +53,8 @@ static const btn_map_t BTN_MAP[] = {
     { OF_BTN_Y,      '['            },
     { OF_BTN_L1,     ','            },
     { OF_BTN_R1,     '.'            },
+    { OF_BTN_L2,     KEY_TAP_USE    },
+    { OF_BTN_R2,     KEY_POCKET_FIRE },
     { OF_BTN_START,  KEY_ESCAPE     },
     { OF_BTN_SELECT, KEY_TAB        },
 };
@@ -92,6 +100,56 @@ static int normalize_axis(int16_t axis)
     return sign * out;
 }
 
+static int shape_turn_axis(int value)
+{
+    int sign;
+    int mag;
+    int curved;
+
+    if (value == 0)
+    {
+        return 0;
+    }
+
+    sign = value < 0 ? -1 : 1;
+    mag = abs_int(value);
+    curved = (int)(((int64_t)mag * mag) / FRACUNIT);
+
+    if (curved > FRACUNIT)
+    {
+        curved = FRACUNIT;
+    }
+
+    return sign * curved;
+}
+
+static uint32_t trigger_button_mask(const of_input_state_t *s)
+{
+    uint32_t mask = 0;
+
+    if (s->trigger_l != 0)
+    {
+        mask |= OF_BTN_L2;
+    }
+
+    if (s->trigger_r != 0)
+    {
+        mask |= OF_BTN_R2;
+    }
+
+    return mask;
+}
+
+static uint32_t joystick_button_mask(int button, int pressed)
+{
+    if (!pressed || button < 0 || button >= MAX_VIRTUAL_BUTTONS)
+    {
+        return 0;
+    }
+
+    return 1u << button;
+}
+
 static unsigned stick_dir(int x, int y)
 {
     unsigned dir = JOY_DIR_NONE;
@@ -117,32 +175,23 @@ static unsigned stick_dir(int x, int y)
     return dir;
 }
 
-static void post_joystick_axes(const of_input_state_t *s)
+static void post_joystick_axes(const of_input_state_t *s, uint32_t buttons)
 {
     event_t ev;
     int lx = normalize_axis(s->joy_lx);
     int ly = normalize_axis(s->joy_ly);
     int rx = normalize_axis(s->joy_rx);
     int ry = normalize_axis(s->joy_ry);
-    int turn = rx;
-    int strafe = lx;
-
-    /* If the controller only has a left stick, preserve the classic Doom
-     * mapping: left/right turns unless the strafe button is held.  With a
-     * right stick, use the modern split of left-stick strafe and right-stick
-     * turn. */
-    if (turn == 0)
-    {
-        turn = lx;
-        strafe = 0;
-    }
 
     memset(&ev, 0, sizeof(ev));
     ev.type = ev_joystick;
-    ev.data2 = turn;
+    ev.data1 = joystick_button_mask(joybspeed, abs_int(ly) >= STICK_RUN_THRESH)
+             | joystick_button_mask(joybuse, (buttons & OF_BTN_L2) != 0)
+             | joystick_button_mask(joybfire, (buttons & OF_BTN_R2) != 0);
+    ev.data2 = shape_turn_axis(lx);
     ev.data3 = ly;
-    ev.data4 = strafe;
-    ev.data5 = ry;
+    ev.data4 = rx;
+    ev.data5 = 0;
     ev.data6 = stick_dir(lx, ly) << LSTICK_SHIFT
              | stick_dir(rx, ry) << RSTICK_SHIFT;
     D_PostEvent(&ev);
@@ -266,7 +315,7 @@ void I_PollInput(void)
 
     of_input_state_t s;
     of_input_state(0, &s);
-    uint32_t curr = s.buttons;
+    uint32_t curr = s.buttons | trigger_button_mask(&s);
     uint32_t down  = curr & ~prev_buttons;
     uint32_t up    = ~curr &  prev_buttons;
 
@@ -278,7 +327,7 @@ void I_PollInput(void)
         if (up   & BTN_MAP[i].mask) post_key(BTN_MAP[i].key, 0);
     }
 
-    post_joystick_axes(&s);
+    post_joystick_axes(&s, curr);
 
     prev_buttons = curr;
 }

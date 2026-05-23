@@ -162,6 +162,8 @@ void D_ProcessEvents (void)
 // wipegamestate can be set to -1 to force a wipe on the next draw
 gamestate_t     wipegamestate = GS_DEMOSCREEN;
 
+#define BORDER_REDRAW_FRAMES 8
+
 static void D_ClearMenuResidueFrame(void)
 {
     if (I_VideoBuffer == NULL)
@@ -196,7 +198,7 @@ boolean D_Display (void)
     {
 	R_ExecuteSetViewSize ();
 	oldgamestate = -1;                      // force background redraw
-	borderdrawcount = 3;
+	borderdrawcount = BORDER_REDRAW_FRAMES;
     }
 
     // save the current screen if about to wipe
@@ -288,6 +290,7 @@ boolean D_Display (void)
     {
 	viewactivestate = false;        // view was not active
 	R_FillBackScreen ();    // draw the pattern into the back screen
+	borderdrawcount = BORDER_REDRAW_FRAMES;
     }
 
     // see if the border needs to be updated to the screen
@@ -296,7 +299,7 @@ boolean D_Display (void)
 	if (menuactivestate && !menuactive)
 	    R_MarkViewBorderDirty();
 	if (menuactive || menuactivestate || !viewactivestate)
-	    borderdrawcount = 3;
+	    borderdrawcount = BORDER_REDRAW_FRAMES;
 	if (borderdrawcount || R_ViewBorderNeedsDraw())
 	{
 	    R_DrawViewBorder ();    // erase old menu stuff
