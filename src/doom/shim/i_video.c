@@ -94,8 +94,6 @@ static grabmouse_callback_t grabmouse_cb;
 #define GPU_PACE_VTOTAL_UPDATE_US 500000u
 #define GPU_PACE_POCKET_VTOTAL_UPDATE_US 100000u
 #define GPU_PACE_POCKET_VTOTAL_STEP 12u
-#define FRAME_SPILL_REPORT_US 1000000u
-#define FRAME_SPILL_MIN_OVER_US 1000u
 
 typedef struct
 {
@@ -128,15 +126,6 @@ static uint64_t fixed_display_sample_raw_us;
 static uint64_t fixed_display_last_raw_vblank_us;
 static unsigned int fixed_display_period_us;
 static int fixed_display_sample_valid;
-static int frame_spill_options_checked;
-static int frame_spill_trace_enabled;
-static unsigned int frame_spill_last_report_us;
-static unsigned int frame_spill_suppressed;
-static unsigned int frame_spill_debt_us;
-static unsigned int frame_spill_debt_frames;
-static unsigned int frame_spill_debt_max_over_us;
-static int frame_spill_gap_valid;
-static int frame_spill_last_gap;
 
 static void I_ApplyCappedRefresh(void);
 
@@ -182,187 +171,6 @@ static unsigned int I_VTotalPeriodUS(unsigned int vtotal)
     return (unsigned int)(((uint64_t)GPU_PACE_MIN_US * vtotal
                            + DOOM_VIDEO_VTOTAL_60HZ / 2u)
                           / DOOM_VIDEO_VTOTAL_60HZ);
-}
-
-static void I_CheckFrameSpillOptions(void)
-{
-    if (frame_spill_options_checked)
-        return;
-
-    frame_spill_trace_enabled = M_CheckParm("-spilltrace") > 0
-                              && M_CheckParm("-nospilltrace") <= 0;
-    frame_spill_options_checked = 1;
-}
-
-static unsigned int I_CurrentDisplayBudgetUS(void)
-{
-    if (current_vtotal_valid)
-    {
-        if (gpu_pace.current_vtotal == OF_VIDEO_VTOTAL_AUTO)
-            return gpu_pace.refresh_period_us;
-
-        return I_VTotalPeriodUS(gpu_pace.current_vtotal);
-    }
-
-    return gpu_pace.refresh_period_us;
-}
-
-static unsigned int I_FrameStageUS(r_perf_stage_t stage)
-{
-    uint64_t us = R_Perf_CurrentStageUS(stage);
-
-    return us > UINT32_MAX ? UINT32_MAX : (unsigned int)us;
-}
-
-static void I_LogFrameSpill(const char *path,
-                            unsigned int prepare_us,
-                            unsigned int queued_wait_us)
-{
-    of_video_timing_t timing;
-    unsigned int display_us;
-    unsigned int view_us;
-    unsigned int hud_us;
-    unsigned int budget_us;
-    unsigned int over_us;
-    unsigned int now_us;
-    unsigned int missed_slots;
-    unsigned int suppressed;
-    unsigned int debt_us;
-    unsigned int debt_frames;
-    unsigned int debt_max_over_us;
-    unsigned int gap_inc = 0;
-    int gap = 0;
-    unsigned int bsp_us;
-    unsigned int planes_us;
-    unsigned int masked_us;
-    unsigned int present_us;
-    unsigned int gpuwait_us;
-    unsigned int flip_us;
-    unsigned int cache_us;
-    unsigned int blit_us;
-
-    if (!display_frame_paced || !frame_interpolation)
-        return;
-
-    I_CheckFrameSpillOptions();
-    if (!frame_spill_trace_enabled)
-        return;
-
-    budget_us = I_CurrentDisplayBudgetUS();
-    if (budget_us == 0)
-        return;
-
-    of_video_get_timing(&timing);
-    if (timing.vblank_count != 0 || timing.present_count != 0)
-    {
-        gap = (int)(timing.vblank_count - timing.present_count);
-        if (frame_spill_gap_valid && gap > frame_spill_last_gap)
-            gap_inc = (unsigned int)(gap - frame_spill_last_gap);
-        frame_spill_last_gap = gap;
-        frame_spill_gap_valid = 1;
-    }
-
-    if (prepare_us > budget_us)
-    {
-        over_us = prepare_us - budget_us;
-        frame_spill_debt_us += over_us;
-        frame_spill_debt_frames++;
-        if (over_us > frame_spill_debt_max_over_us)
-            frame_spill_debt_max_over_us = over_us;
-    }
-    else
-    {
-        unsigned int slack_us = budget_us - prepare_us;
-
-        over_us = 0;
-        if (slack_us >= frame_spill_debt_us)
-        {
-            frame_spill_debt_us = 0;
-            frame_spill_debt_frames = 0;
-            frame_spill_debt_max_over_us = 0;
-        }
-        else
-        {
-            frame_spill_debt_us -= slack_us;
-        }
-    }
-
-    if (over_us < FRAME_SPILL_MIN_OVER_US &&
-        frame_spill_debt_us < FRAME_SPILL_MIN_OVER_US &&
-        gap_inc == 0)
-    {
-        return;
-    }
-
-    now_us = of_time_us();
-    if (frame_spill_last_report_us != 0 &&
-        now_us - frame_spill_last_report_us < FRAME_SPILL_REPORT_US)
-    {
-        frame_spill_suppressed++;
-        return;
-    }
-
-    missed_slots = prepare_us > budget_us
-                 ? ((prepare_us + budget_us - 1u) / budget_us) - 1u
-                 : 0u;
-    suppressed = frame_spill_suppressed;
-    debt_us = frame_spill_debt_us;
-    debt_frames = frame_spill_debt_frames;
-    debt_max_over_us = frame_spill_debt_max_over_us;
-    frame_spill_suppressed = 0;
-    frame_spill_debt_us = 0;
-    frame_spill_debt_frames = 0;
-    frame_spill_debt_max_over_us = 0;
-    frame_spill_last_report_us = now_us;
-
-    display_us = I_FrameStageUS(R_PERF_STAGE_DISPLAY);
-    view_us = I_FrameStageUS(R_PERF_STAGE_VIEW);
-    hud_us = display_us > view_us ? display_us - view_us : 0;
-    bsp_us = I_FrameStageUS(R_PERF_STAGE_BSP);
-    planes_us = I_FrameStageUS(R_PERF_STAGE_PLANES);
-    masked_us = I_FrameStageUS(R_PERF_STAGE_MASKED);
-    present_us = I_FrameStageUS(R_PERF_STAGE_PRESENT);
-    gpuwait_us = I_FrameStageUS(R_PERF_STAGE_GPU_WAIT);
-    flip_us = I_FrameStageUS(R_PERF_STAGE_GPU_FLIP);
-    cache_us = I_FrameStageUS(R_PERF_STAGE_CACHE);
-    blit_us = I_FrameStageUS(R_PERF_STAGE_BLIT);
-
-    printf("Doom video: frame spill mode=%s path=%s prep=%u.%03ums "
-           "budget=%u.%03ums over=%u.%03ums missed=%u vt=%u "
-           "vb=%u present=%u gap=%d gap_inc=%u debt=%u.%03ums "
-           "debt_frames=%u debt_max=%u.%03ums suppressed=%u "
-           "display=%u.%03ums "
-           "hud=%u.%03ums view=%u.%03ums bsp=%u.%03ums planes=%u.%03ums "
-           "masked=%u.%03ums present_us=%u.%03ums gpuwait=%u.%03ums "
-           "flip=%u.%03ums cache=%u.%03ums blit=%u.%03ums "
-           "flipwait=%u.%03ums\n",
-           M_RefreshModeName(M_EffectiveRefreshMode()),
-           path,
-           prepare_us / 1000u, prepare_us % 1000u,
-           budget_us / 1000u, budget_us % 1000u,
-           over_us / 1000u, over_us % 1000u,
-           missed_slots,
-           current_vtotal_valid ? gpu_pace.current_vtotal : 0u,
-           timing.vblank_count,
-           timing.present_count,
-           gap,
-           gap_inc,
-           debt_us / 1000u, debt_us % 1000u,
-           debt_frames,
-           debt_max_over_us / 1000u, debt_max_over_us % 1000u,
-           suppressed,
-           display_us / 1000u, display_us % 1000u,
-           hud_us / 1000u, hud_us % 1000u,
-           view_us / 1000u, view_us % 1000u,
-           bsp_us / 1000u, bsp_us % 1000u,
-           planes_us / 1000u, planes_us % 1000u,
-           masked_us / 1000u, masked_us % 1000u,
-           present_us / 1000u, present_us % 1000u,
-           gpuwait_us / 1000u, gpuwait_us % 1000u,
-           flip_us / 1000u, flip_us % 1000u,
-           cache_us / 1000u, cache_us % 1000u,
-           blit_us / 1000u, blit_us % 1000u,
-           queued_wait_us / 1000u, queued_wait_us % 1000u);
 }
 
 static void I_ResetFixedDisplaySample(void)
@@ -1203,9 +1011,6 @@ void I_FinishUpdate(void)
                 R_Perf_PacingAddWait(queued_wait_us);
             }
             if (R_GPU_PresentFrame()) {
-                I_LogFrameSpill("direct",
-                                R_Perf_PacingCurrentPrepareUS(),
-                                queued_wait_us);
                 if (display_render_ahead)
                     I_MarkDisplayFlipQueued();
                 video_present_count++;
@@ -1221,7 +1026,6 @@ void I_FinishUpdate(void)
         uint8_t *fb = of_video_surface();
         memcpy(fb, I_VideoBuffer, SCREENWIDTH * SCREENHEIGHT);
         of_video_flip();
-        I_LogFrameSpill("blit", R_Perf_PacingCurrentPrepareUS(), 0);
         video_present_count++;
         R_Perf_CountPresentedFrame(0);
         R_Perf_PacingFrameQueued();

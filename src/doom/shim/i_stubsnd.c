@@ -1,8 +1,8 @@
 /* i_stubsnd.c — stub sound/music modules.
  *
  * chocolate-doom's i_sound.c has static tables that look up these
- * module objects by symbol name.  Provide inert modules so linkage
- * succeeds; music is silent on openfpgaOS for now.
+ * module objects by symbol name.  Provide inert fallbacks plus the
+ * openfpgaOS MIDI music backend.
  */
 
 #include "config.h"
@@ -69,7 +69,7 @@ static int opl_music_volume = 127;
 static int opl_game_paused;
 static int opl_zero_volume_suspended;
 
-void I_OpenFPGAMixerPump(const char *source);
+void I_OpenFPGAMixerPump(void);
 
 static void opl_suspend_zero_volume(void)
 {
@@ -261,7 +261,7 @@ static void    opl_Poll(void)
 {
     if (opl_music_volume > 0)
     {
-        I_OpenFPGAMixerPump("music");
+        I_OpenFPGAMixerPump();
     }
 }
 

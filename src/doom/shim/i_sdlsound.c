@@ -10,7 +10,6 @@
 #include "of.h"
 #include "i_sound.h"
 #include "i_system.h"
-#include "m_argv.h"
 #include "m_misc.h"
 #include "w_wad.h"
 #include "z_zone.h"
@@ -23,8 +22,6 @@
 
 #define NUM_CHANNELS 16
 #define AUDIO_PUMP_SKIP_US 1000u
-#define AUDIO_PUMP_REPORT_US 1000000u
-#define AUDIO_PUMP_MIN_US 1000u
 
 typedef struct {
     int16_t *pcm;
@@ -35,28 +32,10 @@ typedef struct {
 /* Per-Doom-channel state (channel -> stable mixer handle). */
 static of_mixer_handle_t channel_voice[NUM_CHANNELS];
 static unsigned int mixer_last_pump_us;
-static int audio_trace_options_checked;
-static int audio_trace_enabled;
-static unsigned int audio_trace_last_report_us;
-static unsigned int audio_trace_debt_us;
-static unsigned int audio_trace_debt_count;
-static unsigned int audio_trace_debt_max_us;
 
-static void check_audio_trace_options(void)
-{
-    if (audio_trace_options_checked)
-        return;
-
-    audio_trace_enabled = M_CheckParm("-spilltrace") > 0
-                       && M_CheckParm("-nospilltrace") <= 0;
-    audio_trace_options_checked = 1;
-}
-
-void I_OpenFPGAMixerPump(const char *source)
+void I_OpenFPGAMixerPump(void)
 {
     unsigned int now_us = of_time_us();
-    unsigned int start_us;
-    unsigned int elapsed_us;
 
     if (mixer_last_pump_us != 0 &&
         now_us - mixer_last_pump_us < AUDIO_PUMP_SKIP_US)
@@ -64,46 +43,8 @@ void I_OpenFPGAMixerPump(const char *source)
         return;
     }
 
-    start_us = now_us;
     of_mixer_pump();
-    now_us = of_time_us();
-    elapsed_us = now_us - start_us;
-    mixer_last_pump_us = now_us;
-
-    check_audio_trace_options();
-    if (!audio_trace_enabled || elapsed_us == 0)
-        return;
-
-    audio_trace_debt_us += elapsed_us;
-    audio_trace_debt_count++;
-    if (elapsed_us > audio_trace_debt_max_us)
-        audio_trace_debt_max_us = elapsed_us;
-
-    if (elapsed_us < AUDIO_PUMP_MIN_US &&
-        audio_trace_debt_us < AUDIO_PUMP_MIN_US)
-    {
-        return;
-    }
-
-    if (audio_trace_last_report_us != 0 &&
-        now_us - audio_trace_last_report_us < AUDIO_PUMP_REPORT_US)
-    {
-        return;
-    }
-
-    printf("Doom audio: mixer pump source=%s last=%u.%03ums "
-           "debt=%u.%03ums count=%u max=%u.%03ums\n",
-           source,
-           elapsed_us / 1000u, elapsed_us % 1000u,
-           audio_trace_debt_us / 1000u, audio_trace_debt_us % 1000u,
-           audio_trace_debt_count,
-           audio_trace_debt_max_us / 1000u,
-           audio_trace_debt_max_us % 1000u);
-
-    audio_trace_last_report_us = now_us;
-    audio_trace_debt_us = 0;
-    audio_trace_debt_count = 0;
-    audio_trace_debt_max_us = 0;
+    mixer_last_pump_us = of_time_us();
 }
 
 /* Sound devices we claim we can drive. */
@@ -202,7 +143,7 @@ static int I_SDL_GetSfxLumpNum(sfxinfo_t *sfx)
 
 static void I_SDL_UpdateSound(void)
 {
-    I_OpenFPGAMixerPump("sfx");
+    I_OpenFPGAMixerPump();
 }
 
 /* Doom volume: 0..127, sep: 0..254 (0=left, 128=center, 254=right).
