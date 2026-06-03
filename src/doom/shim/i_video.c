@@ -122,6 +122,7 @@ static unsigned int video_present_count;
 static int current_vtotal_valid;
 static int display_frame_paced;
 static int display_render_ahead;
+static int display_cadence_locked;
 static int display_flip_queued;
 static int display_resync_after_miss;
 static unsigned int display_queue_miss_count;
@@ -872,6 +873,15 @@ void I_StartFrame(void)
     I_SetPocketPacing(0);
     display_frame_paced = use_vblank_wait;
     display_render_ahead = use_vblank_wait && R_GPU_UsingDirectFramebuffer();
+    /* The queue-window/resync logic below keeps the render-ahead pipeline
+     * phase-locked to a FIXED panel cadence (one queued flip per known vblank
+     * window).  Under VRR the panel runs V_TOTAL=AUTO, so vblank_count is not
+     * tied to our flip cadence and I_DisplayFlipMissedQueueWindow() reports
+     * spurious misses -- accumulating to a forced, blocking resync that shows
+     * up as a periodic hiccup.  Only arm the miss/resync path when the cadence
+     * is actually locked (non-VRR). */
+    display_cadence_locked = display_render_ahead
+                          && effective_refresh_mode != REFRESH_MODE_VRR;
 
     /* Display-paced refresh modes wait on vblank here, but gameplay stays on
      * vanilla 35 Hz wall-clock tics. d_main.c renders interpolated frames
@@ -1079,7 +1089,7 @@ void I_FinishUpdate(void)
             if (R_GPU_PresentFrame()) {
                 if (display_render_ahead)
                 {
-                    if (missed_queue_window)
+                    if (display_cadence_locked && missed_queue_window)
                     {
                         display_queue_miss_count++;
                         if (display_queue_miss_count >=
