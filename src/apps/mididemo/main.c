@@ -1,19 +1,40 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
- * openfpgaOS MIDI Demo Application
+ * mididemo — General-MIDI playback via the SoundFont-driven sample synth
  *
- * MODE 1 (default): plays a MIDI file from slot:3
- * MODE 2 (DPad UP):  diagnostic — plays Guitar/Bass/Snare on loop
- *                    so you can listen and verify each instrument
+ * Canonical example of:
+ *   - Loading a SoundFont bank with of_smp_bank_load (or reusing the
+ *     kernel's auto-loaded preload buffer when one is exposed via
+ *     OF_SVC->smp_bank_preload_base)
+ *   - Driving the CPU MIDI voice engine with of_smp_voice_*: note_on,
+ *     note_off, channel CC updates (volume, expression, pan, bend),
+ *     and the 1 kHz logical envelope tick dispatched by the timer ISR
+ *   - of_midi_play() to spool a SMF file through the synth — the
+ *     parser runs in main(), but the actual mixer slot ops happen
+ *     inside the timer ISR via of_midi_pump (see project memory
+ *     `midi_isr_pump`)
+ *   - smp_voice_tick_get_stats() for live voice-load diagnostics
+ *
+ * Modes:
+ *   Default          play the MIDI file at slot:4
+ *   D-pad UP toggle  diagnostic instrument loop — sustained notes for
+ *                    every program so you can audit each preset
  *
  * Controls:
- *   START   = play/pause
- *   SELECT  = restart
- *   DPad UP = toggle diagnostic mode (guitar/bass/snare)
- *   L1/R1   = volume down/up
+ *   START      play / pause
+ *   SELECT     restart
+ *   D-pad UP   diagnostic mode toggle
+ *   L1 / R1    master volume down / up
  */
 
 #include "of.h"
 #include "of_smp_bank.h"
+#include "of_smp_voice.h"
 #include <time.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -186,10 +207,10 @@ static void raw_play_inst(int idx, int note) {
            note, bank, program, n);
 
     for (int i = 0; i < n; i++) {
-        const int16_t *sample_ptr = (const int16_t *)(sbase + zones[i]->sample_offset);
+        const uint8_t *sample_ptr = sbase + zones[i]->sample_offset;
         uint32_t sample_count = zones[i]->sample_length;
         uint32_t sample_bytes = sample_count * sizeof(int16_t);
-        const int16_t *play_ptr = sample_ptr;
+        const uint8_t *play_ptr = sample_ptr;
 
         if (raw_use_copy) {
             int16_t *copy_buf = raw_copy_buf_get(i);
@@ -198,10 +219,10 @@ static void raw_play_inst(int idx, int note) {
                 continue;
             }
             memcpy(copy_buf, sample_ptr, sample_bytes);
-            play_ptr = copy_buf;
+            play_ptr = (const uint8_t *)copy_buf;
         }
 
-        int v = of_mixer_play((const uint8_t *)play_ptr,
+        int v = of_mixer_play(play_ptr,
                               sample_count,
                               hdr->sample_rate,
                               0, 220);
@@ -222,10 +243,7 @@ static void raw_play_inst(int idx, int note) {
 
 __attribute__((unused))
 static int load_midi_file(void) {
-    /* Demo loads the MIDI file from data slot 3; filename-based access
-     * (e.g. fopen("music.mid")) requires SDK plumbing of_file_get_name
-     * from the OS, which is not wired up yet. */
-    FILE *f = fopen("slot:3", "rb");
+    FILE *f = fopen("music.mid", "rb");
     if (!f) return -1;
 
     size_t n = fread(midi_buf, 1, MIDI_MAX_SIZE, f);
@@ -242,10 +260,12 @@ static int load_midi_file(void) {
     return 0;
 }
 
-/* Mode: 0 = MIDI file player, 1 = instrument diagnostic, 2 = raw sample */
+/* Mode: 0 = MIDI file player, 1 = instrument diagnostic,
+ *       2 = raw sample (direct mixer) */
 #define MODE_PLAY  0
 #define MODE_DIAG  1
 #define MODE_RAW   2
+#define MODE_COUNT 3
 
 int main(void) {
     printf("\033[2J\033[H");
@@ -255,49 +275,28 @@ int main(void) {
     build_all_diag();
 
     /* Initialize mixer — required by the sample-based MIDI backend */
-    of_mixer_init(48, OF_MIXER_OUTPUT_RATE);
+    of_mixer_init(OF_MIXER_MAX_VOICES, OF_MIXER_OUTPUT_RATE);
     of_mixer_set_master_volume(255);
     of_mixer_set_group_volume(OF_MIXER_GROUP_MUSIC, 255);
     of_mixer_set_group_volume(OF_MIXER_GROUP_SFX, 255);
 
-    /* Sample bank is auto-loaded by the kernel from a staged slot before
-     * main(); an SDK constructor binds of_smp_bank to it. Just verify. */
-    const ofsf_header_t *bank_hdr = of_smp_bank_get();
-    if (!bank_hdr) {
-        printf(" No bank bound — stage a .ofsf file in a data slot\n");
+    /* Sample bank is auto-loaded by the kernel at boot — no init call
+     * is needed. If no .ofsf was staged, of_smp_bank_get() returns NULL. */
+    const ofsf_header_t *bhdr = of_smp_bank_get();
+    if (!bhdr) {
+        printf(" No SoundFont found!\n");
+        printf(" Place a .ofsf in a data slot\n");
         while (1) {}
     }
-    printf(" Bank loaded (%.1f KB)\n", bank_hdr->sample_data_size / 1024.0f);
+    printf(" Bank loaded (%.1f KB)\n",
+           bhdr->sample_data_size / 1024.0f);
 
-    /* Raw bank playback test — bypass MIDI engine */
-    {
-        const ofsf_zone_t *zones[4];
-        const uint8_t *sbase = (const uint8_t *)of_smp_bank_sample_base();
-        const ofsf_header_t *hdr = of_smp_bank_get();
-        int n = of_smp_zone_lookup(0, 0, 60, 100, zones, 4);
-        printf(" Bank test: zones=%d sbase=%p\n", n, sbase);
-        if (n > 0 && sbase) {
-            const ofsf_zone_t *z = zones[0];
-            int v = of_mixer_play(sbase + z->sample_offset,
-                                  z->sample_length, hdr->sample_rate, 0, 200);
-            printf(" play voice=%d len=%lu sr=%lu\n",
-                   v, (unsigned long)z->sample_length,
-                   (unsigned long)hdr->sample_rate);
-            if (v >= 0) {
-                if (z->loop_mode == OFSF_LOOP_FORWARD || z->loop_mode == OFSF_LOOP_BIDI)
-                    of_mixer_set_loop(v, z->loop_start, z->loop_end);
-                usleep(2000 * 1000);
-                of_mixer_stop(v);
-            }
-        }
-    }
-
-    /* Try to load MIDI file from data slot 3 */
+    /* Try to load the MIDI file (music.mid) by filename */
     int have_midi = (load_midi_file() == 0);
     if (have_midi)
         printf(" MIDI file: %u bytes\n", (unsigned)midi_len);
     else
-        printf(" No MIDI file in slot 3\n");
+        printf(" No MIDI file found\n");
 
     printf(" %u diagnostic instruments\n", (unsigned)DIAG_INST_COUNT);
 
@@ -308,6 +307,7 @@ int main(void) {
     int auto_advance = 1;
     int raw_octave = 0;
     uint32_t note_start_ms = 0;
+    uint32_t last_probe_ms = 0;
 
     printf("\n SELECT=switch mode  L1/R1=volume\n");
     printf(" Play: START=pause A=restart\n");
@@ -331,8 +331,8 @@ int main(void) {
             idx = 0;
             raw_octave = 0;
 
-            /* Cycle: play → diag → raw (skip play if no file) */
-            mode = (mode + 1) % 3;
+            /* Cycle through playback, diagnostic, and raw mixer modes. */
+            mode = (mode + 1) % MODE_COUNT;
             if (mode == MODE_PLAY && !have_midi) mode = MODE_DIAG;
 
 enter_mode:
@@ -350,7 +350,7 @@ enter_mode:
                     printf("\033[14;2H diag rc=%d len=%u     ", prc, diag_inst[idx].len);
                     note_start_ms = of_time_ms();
                 }
-            } else {
+            } else if (mode == MODE_RAW) {
                 printf("\033[10;2H MODE: Raw Sample Playback");
                 raw_play_inst(idx, diag_inst[idx].note);
             }
@@ -453,8 +453,59 @@ enter_mode:
                 raw_play_inst(idx, diag_inst[idx].note + raw_octave * 12);
         }
 
-        if (midi_ready)
-            of_midi_pump();
+        /* Tick-cost probe: print stats every ~1 s.
+         * Budget is 2000 us per MIDI pump callback.
+         *
+         * of_midi_pump() is now driven by the machine-timer ISR at 50 Hz
+         * (installed by of_midi_play), so printf stalls on the main thread
+         * no longer starve the mixer.  We must NOT call of_midi_pump() from
+         * here — doing so would race the ISR on M/voice state. */
+        uint32_t now_ms = of_time_ms();
+        if (now_ms - last_probe_ms >= 1000) {
+            last_probe_ms = now_ms;
+            smp_tick_stats_t s;
+            smp_voice_tick_get_stats(&s);
+            printf("\033[17;2H tick max=%4u us last=%4u us spikes=%u/%u peak_v=%u  ",
+                   (unsigned)s.cycles_max, (unsigned)s.cycles_last,
+                   (unsigned)s.spike_count, (unsigned)s.tick_count,
+                   (unsigned)s.active_peak);
+            printf("\033[18;2H stages: sus=%u rel=%u dec=%u held=%u          ",
+                   (unsigned)s.stage_sustain, (unsigned)s.stage_release,
+                   (unsigned)s.stage_decay, (unsigned)s.sustain_held);
+            /* Per-channel active voice count + GM program number.
+             * Each channel prints as "Cc=Vp" where c=channel (0-F hex),
+             * V=voice count, p=program number.  Channels with 0 voices
+             * are hidden so only the currently-producing channels show. */
+            char chbuf[128];
+            int clen = 0;
+            for (int ch = 0; ch < 16 && clen < (int)sizeof(chbuf) - 12; ch++) {
+                if (s.ch_active[ch] == 0) continue;
+                clen += snprintf(chbuf + clen, sizeof(chbuf) - clen,
+                                 "%X:%u/%d ", ch,
+                                 (unsigned)s.ch_active[ch],
+                                 of_midi_get_program(ch));
+            }
+            printf("\033[19;2H ch(v/prg): %-80s", chbuf);
+            /* Instrumentation — MMIO write counts + pump intervals.
+             * mmio: how many HW writes actually fired in the last second
+             *   (after the cache-skip guards).  Saturation shows up here.
+             * pump: intervals between of_midi_pump() calls; "brst" counts
+             *   pumps that fired >1 tick (ticks bursting) and "over"
+             *   counts pumps that blew the tick_budget (catch-up dropped). */
+            unsigned pmin = (s.pump_interval_min_us == 0xFFFFFFFFu)
+                              ? 0u : s.pump_interval_min_us;
+            printf("\033[20;2H mmio: filt=%5u rate=%5u vol=%5u           ",
+                   (unsigned)s.filter_writes,
+                   (unsigned)s.rate_writes,
+                   (unsigned)s.vol_writes);
+            printf("\033[21;2H pump: n=%5u int=%u..%uus brst=%u over=%u      ",
+                   (unsigned)s.pump_count,
+                   pmin, (unsigned)s.pump_interval_max_us,
+                   (unsigned)s.pump_burst_count,
+                   (unsigned)s.pump_budget_exceeded);
+            smp_voice_tick_reset_stats();
+        }
+
         usleep(1 * 1000);
     }
 
