@@ -442,7 +442,11 @@ static int G_NextWeapon(int direction)
 // or reads it from the demo buffer. 
 // If recording a demo, write it out 
 // 
-void G_BuildTiccmd (ticcmd_t* cmd, int maketic) 
+// "Swap Run/Walk" Options-menu toggle. 0 = vanilla (hold Speed to run);
+// 1 = run by default, hold the Speed control to walk.
+int swap_run_walk = 0;
+
+void G_BuildTiccmd (ticcmd_t* cmd, int maketic)
 { 
     int		i; 
     boolean	strafe;
@@ -468,6 +472,14 @@ void G_BuildTiccmd (ticcmd_t* cmd, int maketic)
          || gamekeydown[key_speed] 
          || joybuttons[joybspeed]
          || mousebuttons[mousebspeed];
+
+    // When Swap Run/Walk is enabled, run by default and hold Speed to walk.
+    // The < guards mirror fraggle's sentinels above so a configured autorun
+    // sentinel never indexes out of bounds.
+    if (swap_run_walk)
+        speed = !((key_speed < NUMKEYS && gamekeydown[key_speed])
+               || (joybspeed < MAX_JOY_BUTTONS && joybuttons[joybspeed])
+               || mousebuttons[mousebspeed]);
  
     forward = side = 0;
     

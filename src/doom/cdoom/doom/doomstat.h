@@ -216,6 +216,9 @@ extern  gamestate_t     gamestate;
 // Bookkeeping on players - state.
 extern	player_t	players[MAXPLAYERS];
 
+// "Swap Run/Walk" Options-menu toggle (defined in g_game.c).
+extern	int		swap_run_walk;
+
 // Alive? Disconnected?
 extern  boolean		playeringame[MAXPLAYERS];
 

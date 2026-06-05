@@ -225,6 +225,7 @@ static void M_ChangeSensitivity(int choice);
 static void M_SfxVol(int choice);
 static void M_MusicVol(int choice);
 static void M_ChangeDetail(int choice);
+static void M_ChangeSwapRunWalk(int choice);
 static void M_SizeDisplay(int choice);
 static void M_Sound(int choice);
 
@@ -367,6 +368,7 @@ enum
     mousesens,
     option_empty2,
     soundvol,
+    runwalk,
     opt_end
 } options_e;
 
@@ -379,7 +381,8 @@ menuitem_t OptionsMenu[]=
     {-1,"",0,'\0'},
     {2,"M_MSENS",	M_ChangeSensitivity,'m'},
     {-1,"",0,'\0'},
-    {1,"M_SVOL",	M_Sound,'s'}
+    {1,"M_SVOL",	M_Sound,'s'},
+    {2,"",		M_ChangeSwapRunWalk,'a'}
 };
 
 menu_t  OptionsDef =
@@ -1262,6 +1265,15 @@ void M_DrawOptions(void)
 
     M_DrawThermo(OptionsDef.x,OptionsDef.y+LINEHEIGHT*(scrnsize+1),
 		 9,screenSize);
+
+    // "Swap Run/Walk" toggle: Doom has no WAD patch for this label, so draw
+    // it with hu_font glyphs in the same style as the REFRESH selector above.
+    {
+        int rw_y = OptionsDef.y + LINEHEIGHT * runwalk;
+        M_DrawRefreshString(OptionsDef.x, rw_y, "RUN:");
+        M_DrawRefreshString(OptionsDef.x + 120, rw_y,
+                            swap_run_walk ? "ALWAYS" : "HOLD");
+    }
 }
 
 void M_Options(int choice)
@@ -1467,6 +1479,17 @@ void M_ChangeDetail(int choice)
     players[consoleplayer].message =
         refresh_mode == REFRESH_MODE_VRR ? "Refresh VRR" : "Refresh Fixed";
 
+    M_SaveSettingsIfNeeded();
+}
+
+// Toggle run/walk inversion. Off = hold Speed to run (vanilla); on = run by
+// default, hold Speed to walk. The menu item shows the HOLD/ALWAYS state, so
+// no HUD message is needed; the value is persisted via the config save.
+void M_ChangeSwapRunWalk(int choice)
+{
+    (void) choice;
+
+    swap_run_walk = !swap_run_walk;
     M_SaveSettingsIfNeeded();
 }
 
