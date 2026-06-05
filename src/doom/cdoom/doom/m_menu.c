@@ -87,7 +87,7 @@ int			detailLevel = 0;
 // LCD fixed and VRR modes render interpolated frames without changing TICRATE.
 // Analogizer PAL/NTSC stays on Doom's normal 35 Hz render loop.
 int			frame_interpolation = 0;
-int                     refresh_mode = REFRESH_MODE_FIXED;
+int                     refresh_mode = REFRESH_MODE_VRR;
 int			screenblocks = 9;
 
 // temp for screenblocks (0-9)
