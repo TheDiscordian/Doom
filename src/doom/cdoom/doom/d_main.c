@@ -417,6 +417,7 @@ void D_BindVariables(void)
     M_BindIntVariable("sfx_volume",             &sfxVolume);
     M_BindIntVariable("music_volume",           &musicVolume);
     M_BindIntVariable("show_messages",          &showMessages);
+    M_BindIntVariable("swap_run_walk",          &swap_run_walk);
     M_BindIntVariable("screenblocks",           &screenblocks);
     M_BindIntVariable("detaillevel",            &detailLevel);
     M_BindIntVariable("frame_interpolation",    &frame_interpolation);

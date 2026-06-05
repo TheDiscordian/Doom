@@ -183,6 +183,13 @@ static default_t	doom_defaults_list[] =
     CONFIG_VARIABLE_INT(show_messages),
 
     //!
+    // If non-zero, run and walk are swapped: the player runs by default
+    // and holds the Speed control to walk.  Toggled in the Options menu.
+    //
+
+    CONFIG_VARIABLE_INT(swap_run_walk),
+
+    //!
     // Keyboard key to turn right.
     //
 
