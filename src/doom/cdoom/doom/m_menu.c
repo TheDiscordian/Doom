@@ -1292,8 +1292,7 @@ void M_DrawOptions(void)
     M_DrawThermo(OptionsDef.x,OptionsDef.y+LINEHEIGHT*(scrnsize+1),
 		 9,screenSize);
 
-    // "Swap Run/Walk" toggle: Doom has no WAD patch for this label, so draw
-    // it with hu_font glyphs in the same style as the REFRESH selector above.
+    // Draw the "RUN" label with hu_font glyphs (no WAD patch), like REFRESH above.
     {
         int rw_y = OptionsDef.y + LINEHEIGHT * runwalk;
         M_DrawRefreshString(OptionsDef.x, rw_y, "RUN:");
@@ -1509,8 +1508,7 @@ void M_ChangeDetail(int choice)
 }
 
 // Toggle run/walk inversion. Off = hold Speed to run (vanilla); on = run by
-// default, hold Speed to walk. The menu item shows the HOLD/ALWAYS state, so
-// no HUD message is needed; the value is persisted via the config save.
+// default. Persisted via config; the menu shows the HOLD/ALWAYS state.
 void M_ChangeSwapRunWalk(int choice)
 {
     (void) choice;

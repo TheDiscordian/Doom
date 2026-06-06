@@ -473,9 +473,8 @@ void G_BuildTiccmd (ticcmd_t* cmd, int maketic)
          || joybuttons[joybspeed]
          || mousebuttons[mousebspeed];
 
-    // When Swap Run/Walk is enabled, run by default and hold Speed to walk.
-    // The < guards mirror fraggle's sentinels above so a configured autorun
-    // sentinel never indexes out of bounds.
+    // Run by default, hold Speed to walk; the < guards match fraggle's
+    // sentinels above so a configured autorun never indexes out of bounds.
     if (swap_run_walk)
         speed = !((key_speed < NUMKEYS && gamekeydown[key_speed])
                || (joybspeed < MAX_JOY_BUTTONS && joybuttons[joybspeed])
@@ -536,8 +535,7 @@ void G_BuildTiccmd (ticcmd_t* cmd, int maketic)
 	    cmd->angleturn += angleturn[tspeed]; 
         if (use_analog && joyxmove)
         {
-            // Linear response to match the Quake port's look feel; the
-            // input shim applies the per-pad (dock vs SNAC) turn gain.
+            // Linear response; the input shim applies the per-pad turn gain.
             joyxmove = joyxmove * joystick_turn_sensitivity / 10;
             joyxmove = (joyxmove > FRACUNIT) ? FRACUNIT : joyxmove;
             joyxmove = (joyxmove < -FRACUNIT) ? -FRACUNIT : joyxmove;

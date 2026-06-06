@@ -12,13 +12,8 @@
  *   Left stick   -> move forward/back + strafe left/right
  *   Right stick  -> analog turn
  *
- * Axis response follows the Quake port (in_of.c): movement axes get a
- * 50/50 linear+squared blend on the dock pad and stay linear (1:1) on
- * a SNAC PSX-Analog pad; turn additionally gets a squared curve to
- * keep the centre calm for fine aiming.  The dock turn gain is 0.6x
- * versus 1.0x for SNAC, putting docked full-tilt turn at ~148 deg/s —
- * between Quake's docked look (112) and Doom's keyboard run-turn
- * (246, which SNAC full tilt reaches). */
+ * Movement axes use a linear+squared blend on the dock pad, linear on a
+ * SNAC pad; turn gets a squared curve, run at 0.6x on the dock pad. */
 
 #include "of.h"
 #include "d_event.h"
@@ -141,15 +136,9 @@ static int axis_live(int16_t axis)
     return axis != 0 && axis != STICK_INACTIVE;
 }
 
-/* SNAC / digital-pad guard, same scheme as the Quake port: a digital
- * pad's undriven joy fields reach us pinned at 0x8000 every poll, so
- * axes are zeroed until one of them produces a value only a live,
- * centred-at-rest stick can produce.  Crucially, 0x8000 is ONLY used
- * for latching — once a real stick has been seen it must pass through
- * untouched, because the OS maps the APF's unsigned axis bytes as
- * (raw - 128) * 256, which makes full left/up deflection exactly
- * -32768 (0x8000).  Zeroing it per-poll cut every axis dead at full
- * tilt (e.g. the right stick could strafe right but never left). */
+/* Zero the axes until a live stick is seen: a digital pad leaves them
+ * pinned at 0x8000. Latch only — once a stick is seen 0x8000 must pass
+ * through, since full deflection is genuinely -32768. */
 static void filter_inactive_analog_axes(of_input_state_t *s)
 {
     if (pad_analog_seen)
@@ -197,9 +186,7 @@ static int snac_analog_p1(void)
     return 1;
 }
 
-/* Squared response for the turn axis keeps the centre calm for fine
- * aiming.  Applied to both pad types; the per-pad gain below sets the
- * rate. */
+/* Squared response for the turn axis; the per-pad gain below sets the rate. */
 static int shape_turn_axis(int value)
 {
     int sign;
@@ -223,12 +210,8 @@ static int shape_turn_axis(int value)
     return sign * curved;
 }
 
-/* Softened response for the dock pad's movement axes: a 50/50 blend
- * of linear and squared, out = v*(FRACUNIT+|v|)/(2*FRACUNIT) — the
- * same curve as the Quake port's axis_curved().  Pure squared felt
- * sluggish mid-range; this keeps walking speeds reasonable (half
- * tilt -> ~37%) while still calming the centre, and full deflection
- * reaches full speed.  SNAC DualShock sticks stay linear (1:1). */
+/* Dock-pad movement axes: a 50/50 linear+squared blend,
+ * out = v*(FRACUNIT+|v|)/(2*FRACUNIT). SNAC sticks stay linear. */
 static int axis_move_curve(int value)
 {
     int sign;
@@ -316,11 +299,8 @@ static void post_joystick_axes(const of_input_state_t *s, uint32_t buttons)
     int strafe = lx;
     int turn;
 
-    /* Movement axes: soften the dock pad's response; a SNAC
-     * DualShock's pots already feel right at 1:1, except that they
-     * rarely reach the byte rails, so strafe gets a 5/4 boost letting
-     * ~80% deflection hit full speed (forward is fast enough that the
-     * shortfall isn't felt there). */
+    /* Soften the dock pad's movement axes; SNAC stays 1:1, with a 5/4
+     * strafe boost so partial deflection still reaches full speed. */
     if (!snac)
     {
         forward = axis_move_curve(forward);
@@ -332,8 +312,7 @@ static void post_joystick_axes(const of_input_state_t *s, uint32_t buttons)
                             SNAC_STRAFE_AXIS_GAIN_DEN);
     }
 
-    /* Turn: squared curve, then the dock pad runs at 0.6x, a SNAC
-     * PSX-Analog pad at the full rate. */
+    /* Turn: squared curve; dock pad at 0.6x, SNAC at full rate. */
     turn = scale_axis(shape_turn_axis(rx),
                       snac ? 1 : DOCK_TURN_AXIS_GAIN_NUM,
                       snac ? 1 : DOCK_TURN_AXIS_GAIN_DEN);
