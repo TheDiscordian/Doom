@@ -1,4 +1,4 @@
-# 🕹️ Doom · Heretic · Hexen for openFPGAOS
+# 🕹️ Doom · Heretic · Hexen for openfpgaOS
 
 Three classic id Tech 1 / Raven shooters packaged as standalone openFPGA cores, built on the
 [openfpgaOS SDK](https://github.com/openfpgaOS/openfgpaSDK).
