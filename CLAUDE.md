@@ -16,37 +16,7 @@ on top of one shared chocolate-doom engine and FPGA shim.
 
 ## 📁 Repo layout
 
-```
-Makefile               Root dispatch — CORE=<game> / APP=<sdk-app> (see below)
-README.md              User-facing: games, download, build
-CONTROLS.md            Shipped button maps (controls only — no settings rows)
-CLAUDE.md              This file
-src/
-  doom/                Base Doom core AND the shared engine + shim
-    Makefile           APP=doom, -DOF_DOOM
-    doom/              Doom-specific engine files
-    cdoom/             ← SHARED chocolate-doom engine (real dir lives here)
-    shim/              ← SHARED openfpgaOS FPGA shim (real dir lives here)
-  heretic/
-    Makefile           APP=heretic, -DOF_HERETIC
-    heretic/           Heretic engine module + glue files
-    cdoom -> ../doom/cdoom    (symlink)
-    shim  -> ../doom/shim     (symlink)
-  hexen/
-    Makefile           APP=hexen, -DOF_HEXEN
-    hexen/             Hexen engine module + glue files
-    cdoom -> ../doom/cdoom    (symlink)
-    shim  -> ../doom/shim     (symlink)
-  sdk/                 SDK: of_* headers, musl libc, sdk.mk, platforms/, pc/ (SDL2 shim). Upstream-owned.
-  apps/                Bundled SDK demo apps (the "sdk" core)
-  tools/phdp/          PHDP host tools (UART streaming debugger)
-dist/
-  <game>/              Per-core SD-card config: Cores/, Assets/, Platforms/
-  sdk/                 SDK demo core config
-runtime/               FPGA bitstream, os.bin, loader.bin, soundfont banks
-scripts/               setup / customize / copy / debug / package / release
-build/ .obj/ releases/ Generated — never committed
-```
+The annotated directory tree lives in the README — see [Project structure](README.md#-project-structure). `src/sdk/`, `runtime/`, and `scripts/` are upstream-owned (update via fetch/merge); the cores live in `src/<game>/` and `dist/<game>/`. The conventions below assume that layout.
 
 ## 🔗 The shared-engine + symlink pattern (read this first)
 

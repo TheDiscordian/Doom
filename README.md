@@ -67,6 +67,41 @@ Build objects land under `.obj/<game>/`, so the cores never collide.
 
 ---
 
+## 📁 Project structure
+
+```
+Makefile               Root dispatch — CORE=<game> / APP=<sdk-app>
+README.md              This file — games, download, build
+CONTROLS.md            Shipped button maps
+src/
+  doom/                Base Doom core AND the shared engine + shim
+    Makefile           APP=doom, -DOF_DOOM
+    doom/              Doom-specific engine files
+    cdoom/             ← SHARED chocolate-doom engine (real dir lives here)
+    shim/              ← SHARED openfpgaOS FPGA shim (real dir lives here)
+  heretic/
+    Makefile           APP=heretic, -DOF_HERETIC
+    heretic/           Heretic engine module + glue files
+    cdoom -> ../doom/cdoom    (symlink)
+    shim  -> ../doom/shim     (symlink)
+  hexen/
+    Makefile           APP=hexen, -DOF_HEXEN
+    hexen/             Hexen engine module + glue files
+    cdoom -> ../doom/cdoom    (symlink)
+    shim  -> ../doom/shim     (symlink)
+  sdk/                 openfpgaOS SDK: of_* headers, musl libc, sdk.mk, platforms/, pc/ (SDL2 shim)
+  apps/                Bundled SDK demo apps (the "sdk" core)
+  tools/phdp/          PHDP host tools (UART streaming debugger)
+dist/
+  <game>/              Per-core SD-card config: Cores/, Assets/, Platforms/
+  sdk/                 SDK demo core config
+runtime/               FPGA bitstream, os.bin, loader.bin, soundfont banks
+scripts/               setup / customize / copy / debug / package / release
+build/ .obj/ releases/ Generated — never committed
+```
+
+---
+
 ## 🛠️ Built on the openfpgaOS SDK
 
 This repository is an instance of the **[openfpgaOS SDK](https://github.com/openfpgaOS/openfgpaSDK)** —
