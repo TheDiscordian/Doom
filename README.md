@@ -1,7 +1,6 @@
-# 🕹️ Doom · Heretic · Hexen for the Analogue Pocket
+# 🕹️ Doom · Heretic · Hexen for openFPGAOS
 
-Three classic id Tech 1 / Raven shooters packaged as standalone openFPGA cores
-for the [Analogue Pocket](https://www.analogue.co/pocket), built on the
+Three classic id Tech 1 / Raven shooters packaged as standalone openFPGA cores, built on the
 [openfpgaOS SDK](https://github.com/openfpgaOS/openfgpaSDK).
 
 > 🎮 **Button maps:** see **[CONTROLS.md](CONTROLS.md)**.
