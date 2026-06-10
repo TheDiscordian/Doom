@@ -375,9 +375,15 @@ void R_DrawMaskedColumn (column_t* column)
 	    dc_texturemid = basetexturemid - (column->topdelta<<FRACBITS);
 	    // dc_source = (byte *)column + 3 - column->topdelta;
 
+	    // Affine sprite surface: the post reduces to a {x, ytop,
+	    // count} record (active only between R_GPU_SpriteBegin/End).
+	    if (R_GPU_SpritePost(dc_x, dc_yl, dc_yh))
+	    {
+		/* recorded */
+	    }
 	    // Drawn by either R_DrawColumn
 	    //  or (SHADOW) R_DrawFuzzColumn.
-	    if (maskedcolormaprow < 0
+	    else if (maskedcolormaprow < 0
 		|| detailshift != 0
 		|| colfunc != basecolfunc
 		|| !R_GPU_DrawColumnLightDirect(dc_x, dc_yl, dc_yh,
@@ -412,6 +418,8 @@ R_DrawVisSprite
     fixed_t		frac;
     patch_t*		patch;
     boolean		fuzz_gpu_batch = false;
+    boolean		sprite_gpu;
+    boolean		cpu_sprite;
 	
 	
     /* Cache the sprite patch PU_LEVEL, not PU_CACHE.  R_DrawVisSprite runs
@@ -455,6 +463,27 @@ R_DrawVisSprite
     if (!dc_colormap && R_GPU_CanDrawFuzz())
 	fuzz_gpu_batch = R_GPU_BeginFuzzSpans();
 
+    // CPU-drawn sprite (translated columns, MP): keep its cached FB
+    // writes coherent with surrounding GPU work.
+    cpu_sprite = (colfunc == transcolfunc);
+    if (cpu_sprite)
+	R_GPU_BeginCPUSprite();
+
+    // Affine sprite surface: one param command for the whole sprite;
+    // the post walk below only appends records.
+    sprite_gpu = false;
+    if (maskedcolormaprow >= 0)
+    {
+	const byte *tex2d = R_GetSpriteTexture2D(vis->patch);
+
+	if (tex2d != NULL)
+	    sprite_gpu = R_GPU_SpriteBegin(tex2d, SHORT(patch->height),
+					   patchwidth, dc_texturemid,
+					   dc_iscale, vis->startfrac,
+					   vis->xiscale, vis->x1,
+					   maskedcolormaprow);
+    }
+
     for (dc_x=vis->x1 ; dc_x<=vis->x2 ; dc_x++, frac += vis->xiscale)
     {
 	texturecolumn = frac>>FRACBITS;
@@ -464,6 +493,12 @@ R_DrawVisSprite
 			       LONG(patch->columnofs[texturecolumn]));
 	R_DrawMaskedColumn (column);
     }
+
+    if (sprite_gpu)
+	R_GPU_SpriteEnd();
+
+    if (cpu_sprite)
+	R_GPU_EndCPUSprite();
 
     if (fuzz_gpu_batch)
 	R_GPU_EndFuzzSpans();

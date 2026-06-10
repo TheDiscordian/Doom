@@ -25,6 +25,7 @@
 #include "config.h"
 
 #include "h2def.h"
+#include "r_gpu.h"
 #include "ct_chat.h"
 #include "d_iwad.h"
 #include "d_mode.h"
@@ -972,6 +973,9 @@ static void DrawAndBlit(void)
         R_ExecuteSetViewSize();
     }
 
+    // Acquire the GPU draw buffer for this display frame (openfpgaOS).
+    R_GPU_BeginDisplayFrame();
+
     // Do buffered drawing
     switch (gamestate)
     {
@@ -986,12 +990,21 @@ static void DrawAndBlit(void)
             }
             else
             {
+                R_GPU_BeginFrame();
                 R_RenderPlayerView(&players[displayplayer]);
             }
             CT_Drawer();
             UpdateState |= I_FULLVIEW;
             if (MenuActive)
                 SB_state = -1;   // redraw the bar under an overlapping menu
+            // Direct-FB triple buffering: force a full statusbar +
+            // border redraw per frame so every flip buffer carries the
+            // current HUD (openfpgaOS).
+            if (R_GPU_UsingDirectFramebuffer())
+            {
+                SB_state = -1;
+                BorderNeedRefresh = true;
+            }
             SB_Drawer();
             break;
         case GS_INTERMISSION:

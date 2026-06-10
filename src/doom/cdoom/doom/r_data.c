@@ -478,6 +478,129 @@ int R_GetTextureWidthMask(int tex)
     return texturewidthmask[tex];
 }
 
+/* ================================================================
+ * Flat 2D wall-texture cache for the GPU param-wall path.
+ *
+ * The param-span command samples one tex_addr with (u,v) addressing,
+ * but Doom textures are column-oriented with irregular column homes
+ * (composite block for multipatched columns, patch lump + 3 for
+ * single-patch columns).  This cache lays the columns the renderer
+ * would actually read out as one contiguous column-major block:
+ * column x at block + x*texheight.  memcpy of texheight bytes per
+ * column reads exactly the byte range R_DrawColumn would read, so
+ * short-post garbage (tutti-frutti) matches software byte for byte.
+ *
+ * Blocks are PU_LEVEL with an owner pointer (auto-NULLed on level
+ * free, same lifetime as composites); a per-level byte budget caps
+ * zone pressure — over budget, callers fall back to column emission.
+ * ================================================================ */
+#define GPU_WALL_TEX2D_BUDGET (2 * 1024 * 1024)
+#define GPU_SPRITE_TEX2D_BUDGET (2 * 1024 * 1024)
+/* vtex wraps &127 like R_DrawColumn; for texheight < 128 the GPU can
+ * read up to 127 bytes past the last column — pad so it stays inside
+ * the block (software reads the same out-of-column bytes). */
+#define GPU_WALL_TEX2D_PAD 128
+
+static byte **gpu_wall_tex2d;
+static int gpu_wall_tex2d_budget;
+static byte **gpu_sprite_tex2d;
+static int gpu_sprite_tex2d_budget;
+
+byte *R_GetWallTexture2D(int texnum)
+{
+    texture_t *texture;
+    byte *block;
+    int width;
+    int height;
+    int size;
+
+    if (gpu_wall_tex2d == NULL)
+        return NULL;
+    if (gpu_wall_tex2d[texnum] != NULL)
+        return gpu_wall_tex2d[texnum];
+
+    texture = textures[texnum];
+    /* columns above the width mask are never addressed */
+    width = texturewidthmask[texnum] + 1;
+    if (width > texture->width)
+        width = texture->width;
+    height = texture->height;
+    size = width * height + GPU_WALL_TEX2D_PAD;
+
+    if (size > gpu_wall_tex2d_budget)
+        return NULL;
+
+    block = Z_Malloc(size, PU_LEVEL, &gpu_wall_tex2d[texnum]);
+    gpu_wall_tex2d_budget -= size;
+
+    for (int x = 0; x < width; x++)
+        memcpy(block + x * height, R_GetColumn(texnum, x), height);
+    memset(block + width * height, 0, GPU_WALL_TEX2D_PAD);
+
+    R_GPU_TextureDataUpdated(block, (unsigned int)size);
+
+    return block;
+}
+
+/* Flat 2D sprite block for the GPU affine-sprite path: patch posts
+ * decoded column-major (column x at block + x*height, transparent
+ * texels zero).  Records cover only post extents, so the zeros are
+ * never sampled except at clamped boundary roundings. */
+byte *R_GetSpriteTexture2D(int spritelump)
+{
+    patch_t *patch;
+    byte *block;
+    int width;
+    int height;
+    int size;
+
+    if (gpu_sprite_tex2d == NULL)
+        return NULL;
+    if (spritelump < 0 || spritelump >= numspritelumps)
+        return NULL;
+    if (gpu_sprite_tex2d[spritelump] != NULL)
+        return gpu_sprite_tex2d[spritelump];
+
+    /* PU_LEVEL to match the drawn-sprite residency policy. */
+    patch = W_CacheLumpNum(firstspritelump + spritelump, PU_LEVEL);
+    width = SHORT(patch->width);
+    height = SHORT(patch->height);
+    if (width <= 0 || height <= 0 || height > 0xFFFF)
+        return NULL;
+    size = width * height;
+
+    if (size > gpu_sprite_tex2d_budget)
+        return NULL;
+
+    block = Z_Malloc(size, PU_LEVEL, &gpu_sprite_tex2d[spritelump]);
+    gpu_sprite_tex2d_budget -= size;
+    memset(block, 0, size);
+
+    for (int x = 0; x < width; x++)
+    {
+        const column_t *column = (const column_t *)
+            ((const byte *)patch + LONG(patch->columnofs[x]));
+
+        while (column->topdelta != 0xff)
+        {
+            int len = column->length;
+            int top = column->topdelta;
+
+            if (top + len > height)
+                len = height - top;
+            if (len > 0)
+                memcpy(block + x * height + top,
+                       (const byte *)column + 3, len);
+            column = (const column_t *)
+                ((const byte *)column + column->length + 4);
+        }
+    }
+
+    R_GPU_TextureDataUpdated(block, (unsigned int)size);
+
+    return block;
+}
+
 static void GenerateTextureHashTable(void)
 {
     texture_t **rover;
@@ -603,6 +726,9 @@ void R_InitTextures (void)
     texturewidthmask = Z_Malloc (numtextures * sizeof(*texturewidthmask), PU_STATIC, 0);
     textureheight = Z_Malloc (numtextures * sizeof(*textureheight), PU_STATIC, 0);
     memset (texturecolumnptr, 0, numtextures * sizeof(*texturecolumnptr));
+    gpu_wall_tex2d = Z_Malloc (numtextures * sizeof(*gpu_wall_tex2d), PU_STATIC, 0);
+    memset (gpu_wall_tex2d, 0, numtextures * sizeof(*gpu_wall_tex2d));
+    gpu_wall_tex2d_budget = GPU_WALL_TEX2D_BUDGET;
 
     //	Really complex printing shit...
     temp1 = W_GetNumForName (DEH_String("S_START"));  // P_???????
@@ -739,6 +865,9 @@ void R_InitSpriteLumps (void)
     spritewidth = Z_Malloc (numspritelumps*sizeof(*spritewidth), PU_STATIC, 0);
     spriteoffset = Z_Malloc (numspritelumps*sizeof(*spriteoffset), PU_STATIC, 0);
     spritetopoffset = Z_Malloc (numspritelumps*sizeof(*spritetopoffset), PU_STATIC, 0);
+    gpu_sprite_tex2d = Z_Malloc (numspritelumps*sizeof(*gpu_sprite_tex2d), PU_STATIC, 0);
+    memset (gpu_sprite_tex2d, 0, numspritelumps*sizeof(*gpu_sprite_tex2d));
+    gpu_sprite_tex2d_budget = GPU_SPRITE_TEX2D_BUDGET;
 	
     for (i=0 ; i< numspritelumps ; i++)
     {
@@ -910,6 +1039,11 @@ void R_PrecacheLevel (void)
     if (flatlumpdata != NULL)
         memset(flatlumpdata, 0, numflats * sizeof(*flatlumpdata));
 
+    /* PU_LEVEL frees auto-NULLed the per-texture owner pointers; the
+     * 2D wall/sprite texture caches restart from a full budget each level. */
+    gpu_wall_tex2d_budget = GPU_WALL_TEX2D_BUDGET;
+    gpu_sprite_tex2d_budget = GPU_SPRITE_TEX2D_BUDGET;
+
     if (texturecolumnptr != NULL)
         memset(texturecolumnptr, 0, numtextures * sizeof(*texturecolumnptr));
 
@@ -981,6 +1115,10 @@ void R_PrecacheLevel (void)
 	    W_CacheLumpNum(lump, PU_LEVEL);
 	}
 
+	/* Prebuild the param-wall 2D block now: a lazy first-sighting
+	 * build costs a full GPU pipeline drain mid-frame (openfpgaOS). */
+	R_GetWallTexture2D(i);
+
 	if (texturecompositesize[i] > 0)
 	{
 	    if (!texturecomposite[i])
@@ -1029,6 +1167,8 @@ void R_PrecacheLevel (void)
 		lump = firstspritelump + sf->lump[k];
 		spritememory += lumpinfo[lump]->size;
 		W_CacheLumpNum(lump , PU_LEVEL);
+		/* Prebuild the affine-sprite block (openfpgaOS). */
+		R_GetSpriteTexture2D(sf->lump[k]);
 	    }
 	}
     }

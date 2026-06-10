@@ -221,11 +221,6 @@ R_MapPlane
 	index = cachedlightindex[y];
     }
 
-    length = FixedMul (distance,distscale[x1]);
-    angle = (viewangle + xtoviewangle[x1])>>ANGLETOFINESHIFT;
-    xfrac = viewx + FixedMul(finecosine[angle], length);
-    yfrac = -viewy - FixedMul(finesine[angle], length);
-
     if (fixedcolormap)
     {
 	colormap = fixedcolormap;
@@ -235,6 +230,20 @@ R_MapPlane
     {
 	gpu_light = planezlightrow[index];
     }
+
+    // Param-record visplane path: the GPU evaluates the perspective
+    // planes itself, so the span reduces to a {x1, y, count} record and
+    // the per-span length/angle/frac math below is skipped entirely.
+    if (spanfunc == R_DrawSpan &&
+	R_GPU_PlaneSpanLight(y, x1, x2, gpu_light))
+    {
+	goto done;
+    }
+
+    length = FixedMul (distance,distscale[x1]);
+    angle = (viewangle + xtoviewangle[x1])>>ANGLETOFINESHIFT;
+    xfrac = viewx + FixedMul(finecosine[angle], length);
+    yfrac = -viewy - FixedMul(finesine[angle], length);
 
     if (spanfunc == R_DrawSpan)
     {
@@ -491,6 +500,7 @@ OF_FASTTEXT void R_DrawPlanes (void)
     int                 lumpnum;
     int                 flatnum;
     boolean             animated_flat;
+    boolean             gpu_plane;
 				
 #ifdef RANGECHECK
     if (ds_p - drawsegs > MAXDRAWSEGS)
@@ -557,9 +567,30 @@ OF_FASTTEXT void R_DrawPlanes (void)
 	planezlight = zlight[light];
 	planezlightrow = zlightrow[light];
 
+	// Param-record visplane path: derive the perspective planes once,
+	// then R_MapPlane submits bare span records.  fixedcolormap pins a
+	// single colormap row when it maps to one; otherwise (or when the
+	// path is unavailable) spans fall back to per-span emission.
+	gpu_plane = false;
+	if (spanfunc == R_DrawSpan)
+	{
+	    int fixed_row = -1;
+
+	    if (fixedcolormap)
+		fixed_row = R_GPU_ColormapRow((const byte *)fixedcolormap);
+
+	    if (!fixedcolormap || fixed_row >= 0)
+	    {
+		gpu_plane = R_GPU_BeginPlaneSpans(ds_source,
+						  pl->height - viewz,
+						  fixedcolormap ? fixed_row
+								: -1);
+	    }
+	}
+
 	pl->top[pl->maxx+1] = 0xff;
 	pl->top[pl->minx-1] = 0xff;
-		
+
 	stop = pl->maxx + 1;
 
 	for (x=pl->minx ; x<= stop ; x++)
@@ -569,7 +600,10 @@ OF_FASTTEXT void R_DrawPlanes (void)
 			pl->top[x],
 			pl->bottom[x]);
 	}
-	
+
+	if (gpu_plane)
+	    R_GPU_EndPlaneSpans();
+
         if (!animated_flat && !R_GPU_DeferLumpRelease(lumpnum))
             W_ReleaseLumpNum(lumpnum);
     }

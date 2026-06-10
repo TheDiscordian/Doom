@@ -22,6 +22,7 @@
 */
 
 #include "doomdef.h"
+#include "r_gpu.h"
 #include "deh_str.h"
 #include "p_local.h"
 #include "s_sound.h"
@@ -582,6 +583,7 @@ void IN_DrawStatBack(void)
     byte *dest;
 
     src = W_CacheLumpName(DEH_String("FLOOR16"), PU_CACHE);
+    R_GPU_PrepareForCPUAccess();
     dest = I_VideoBuffer;
 
     for (y = 0; y < SCREENHEIGHT; y++)

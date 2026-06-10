@@ -1494,6 +1494,10 @@ void AM_drawCrosshair(int color)
 
 void AM_Drawer(void)
 {
+    // Direct-FB mode: hand the automap rows back to the CPU and mark
+    // them dirty so the present flushes them (openfpgaOS).
+    V_MarkRect(f_x, f_y, f_w, f_h);
+
     const char *level_name;
     int numepisodes;
 

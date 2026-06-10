@@ -18,6 +18,7 @@
 #include <ctype.h>
 
 #include "doomdef.h"
+#include "r_gpu.h"
 #include "deh_str.h"
 #include "i_swap.h"
 #include "i_video.h"
@@ -99,6 +100,7 @@ boolean F_Responder(event_t * event)
         finalestage++;
         /*
         memset((byte *) 0xa0000, 0, SCREENWIDTH * SCREENHEIGHT);
+        R_GPU_PrepareForCPUAccess();
         memset(I_VideoBuffer, 0, SCREENWIDTH * SCREENHEIGHT);
         I_SetPalette(W_CacheLumpName("PLAYPAL", PU_CACHE));
         */
@@ -160,6 +162,7 @@ void F_TextWrite(void)
 // erase the entire screen to a tiled background
 //
     src = W_CacheLumpName(finaleflat, PU_CACHE);
+    R_GPU_PrepareForCPUAccess();
     dest = I_VideoBuffer;
     for (y = 0; y < SCREENHEIGHT; y++)
     {
@@ -223,6 +226,7 @@ void F_DrawPatchCol(int x, patch_t * patch, int col)
     int count;
 
     column = (column_t *) ((byte *) patch + LONG(patch->columnofs[col]));
+    R_GPU_PrepareForCPUAccess();
     desttop = I_VideoBuffer + x;
 
 // step through the posts in a column
@@ -264,12 +268,14 @@ void F_DemonScroll(void)
     p2 = W_CacheLumpName(DEH_String("FINAL2"), PU_LEVEL);
     if (finalecount < 70)
     {
+        R_GPU_PrepareForCPUAccess();
         memcpy(I_VideoBuffer, p1, SCREENHEIGHT * SCREENWIDTH);
         nextscroll = finalecount;
         return;
     }
     if (yval < 64000)
     {
+        R_GPU_PrepareForCPUAccess();
         memcpy(I_VideoBuffer, p2 + SCREENHEIGHT * SCREENWIDTH - yval, yval);
         memcpy(I_VideoBuffer + yval, p1, SCREENHEIGHT * SCREENWIDTH - yval);
         yval += SCREENWIDTH;
@@ -277,6 +283,7 @@ void F_DemonScroll(void)
     }
     else
     {                           //else, we'll just sit here and wait, for now
+        R_GPU_PrepareForCPUAccess();
         memcpy(I_VideoBuffer, p2, SCREENWIDTH * SCREENHEIGHT);
     }
 }

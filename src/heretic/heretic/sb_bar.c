@@ -17,6 +17,7 @@
 // SB_bar.c
 
 #include "doomdef.h"
+#include "r_gpu.h"
 #include "deh_str.h"
 #include "i_video.h"
 #include "i_swap.h"
@@ -408,6 +409,7 @@ static void ShadeLine(int x, int y, int height, int shade)
     byte *shades;
 
     shades = colormaps + 9 * 256 + shade * 2 * 256;
+    R_GPU_PrepareForCPUAccessRect(x, y, 1, height);
     dest = I_VideoBuffer + y * SCREENWIDTH + x;
     while (height--)
     {

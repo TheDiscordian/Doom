@@ -62,6 +62,9 @@ angle_t xtoviewangle[SCREENWIDTH + 1];
 lighttable_t *scalelight[LIGHTLEVELS][MAXLIGHTSCALE];
 lighttable_t *scalelightfixed[MAXLIGHTSCALE];
 lighttable_t *zlight[LIGHTLEVELS][MAXLIGHTZ];
+byte scalelightrow[LIGHTLEVELS][MAXLIGHTSCALE];
+byte scalelightfixedrow[MAXLIGHTSCALE];
+byte zlightrow[LIGHTLEVELS][MAXLIGHTZ];
 
 int extralight;                 // bumped light from gun blasts
 
@@ -509,6 +512,7 @@ void R_InitLightTables(void)
             if (level >= NUMCOLORMAPS)
                 level = NUMCOLORMAPS - 1;
             zlight[i][j] = colormaps + level * 256;
+            zlightrow[i][j] = (byte)level;
         }
     }
 }
@@ -633,6 +637,7 @@ void R_ExecuteSetViewSize(void)
             if (level >= NUMCOLORMAPS)
                 level = NUMCOLORMAPS - 1;
             scalelight[i][j] = colormaps + level * 256;
+            scalelightrow[i][j] = (byte)level;
         }
     }
 
@@ -761,9 +766,11 @@ void R_SetupFrame(player_t * player)
         fixedcolormap = colormaps + player->fixedcolormap
             * 256 * sizeof(lighttable_t);
         walllights = scalelightfixed;
+        walllightrows = scalelightfixedrow;
         for (i = 0; i < MAXLIGHTSCALE; i++)
         {
             scalelightfixed[i] = fixedcolormap;
+            scalelightfixedrow[i] = (byte)player->fixedcolormap;
         }
     }
     else

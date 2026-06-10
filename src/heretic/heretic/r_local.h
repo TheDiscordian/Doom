@@ -287,6 +287,11 @@ extern lighttable_t *scalelight[LIGHTLEVELS][MAXLIGHTSCALE];
 extern lighttable_t *scalelightfixed[MAXLIGHTSCALE];
 extern lighttable_t *zlight[LIGHTLEVELS][MAXLIGHTZ];
 
+// GPU light rows: colormap row index per light pointer (openfpgaOS port)
+extern byte scalelightrow[LIGHTLEVELS][MAXLIGHTSCALE];
+extern byte scalelightfixedrow[MAXLIGHTSCALE];
+extern byte zlightrow[LIGHTLEVELS][MAXLIGHTZ];
+
 extern int extralight;
 extern lighttable_t *fixedcolormap;
 
@@ -345,6 +350,8 @@ void R_RenderBSPNode(int bspnum);
 //
 extern int rw_angle1;           // angle to line origin
 extern lighttable_t **walllights;
+extern byte *walllightrows;
+extern byte *planezlightrow;
 
 
 void R_RenderMaskedSegRange(drawseg_t * ds, int x1, int x2);
@@ -386,6 +393,7 @@ extern int drawbsp;
 // R_data.c
 //
 extern fixed_t *textureheight;  // needed for texture pegging
+extern int *texturewidthmask;   // pow2 mask per texture (openfpgaOS)
 extern fixed_t *spritewidth;    // needed for pre rendering (fracs)
 extern fixed_t *spriteoffset;
 extern fixed_t *spritetopoffset;
@@ -481,6 +489,9 @@ extern byte *dc_translation;
 void R_DrawSpan(void);
 void R_DrawSpanLow(void);
 
+void R_RetargetBuffer(void);
+byte *R_GetWallTexture2D(int texnum);  // flat 2D block for param-walls
+byte *R_GetSpriteTexture2D(int spritelump);  // flat 2D sprite block
 void R_InitBuffer(int width, int height);
 void R_InitTranslationTables(void);
 

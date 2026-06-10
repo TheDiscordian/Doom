@@ -19,6 +19,7 @@
 #include "i_system.h"
 #include "i_video.h"
 #include "r_local.h"
+#include "r_gpu.h"
 #include "v_video.h"
 
 /*
@@ -57,6 +58,9 @@ int dccount;                    // just for profiling
 void R_DrawColumn(void)
 {
     int count;
+
+    if (R_GPU_DrawColumn())
+        return;
     byte *dest;
     fixed_t frac, fracstep;
 
@@ -116,6 +120,9 @@ void R_DrawColumnLow(void)
 void R_DrawTLColumn(void)
 {
     int count;
+
+    if (R_GPU_DrawTLColumn())
+        return;
     byte *dest;
     fixed_t frac, fracstep;
 
@@ -354,6 +361,9 @@ int dscount;                    // just for profiling
 void R_DrawSpan(void)
 {
     fixed_t xfrac, yfrac;
+
+    if (R_GPU_DrawSpan())
+        return;
     byte *dest;
     int count, spot;
 
@@ -429,6 +439,16 @@ void R_InitBuffer(int width, int height)
     else
         viewwindowy = (SCREENHEIGHT - SBARHEIGHT - height) >> 1;
     for (i = 0; i < height; i++)
+        ylookup[i] = I_VideoBuffer + (i + viewwindowy) * SCREENWIDTH;
+}
+
+// Re-point ylookup at the current I_VideoBuffer after a direct-FB flip
+// retargets the draw buffer (openfpgaOS port).
+void R_RetargetBuffer(void)
+{
+    int i;
+
+    for (i = 0; i < viewheight; i++)
         ylookup[i] = I_VideoBuffer + (i + viewwindowy) * SCREENWIDTH;
 }
 

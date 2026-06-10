@@ -17,6 +17,7 @@
 #include <ctype.h>
 
 #include "h2def.h"
+#include "r_gpu.h"
 #include "s_sound.h"
 #include "i_system.h"
 #include "i_video.h"
@@ -399,6 +400,7 @@ void IN_Drawer(void)
         return;
     }
     UpdateState |= I_FULLSCRN;
+    R_GPU_PrepareForCPUAccess();
     memcpy(I_VideoBuffer, (byte *) patchINTERPIC, SCREENWIDTH * SCREENHEIGHT);
 
     if (gametype == SINGLE)

@@ -253,6 +253,45 @@ R_PrepareDrawColumn(fixed_t scale, int *iscale, int *lightrow,
     *iscale = dc_iscale;
 }
 
+// Param-wall path setup: the GPU evaluates the wall's perspective planes,
+// so each tier column reduces to a {x, ytop, count} record and the
+// per-column texturecolumn/iscale math is skipped entirely.  Tiers whose
+// texture has no flat 2D block keep the column batches.  Once per seg —
+// deliberately NOT OF_FASTTEXT so it doesn't eat APP_BRAM budget.
+static void R_GPUWallTiersBegin(int x, int stopx,
+				fixed_t scale, fixed_t scalestep,
+				int *tier_mid, int *tier_top,
+				int *tier_bottom)
+{
+    *tier_mid = 0;
+    *tier_top = 0;
+    *tier_bottom = 0;
+
+    if (detailshift != 0 || colfunc != basecolfunc)
+	return;
+    if (!midtexture && !toptexture && !bottomtexture)
+	return;
+    if (!R_GPU_WallSegBegin(x, stopx - 1, scale, scalestep,
+			    rw_distance, rw_offset, rw_centerangle))
+	return;
+
+    if (midtexture)
+	*tier_mid = R_GPU_WallTierBegin(0,
+	    R_GetWallTexture2D(midtexture),
+	    textureheight[midtexture] >> FRACBITS,
+	    R_GetTextureWidthMask(midtexture), rw_midtexturemid);
+    if (toptexture)
+	*tier_top = R_GPU_WallTierBegin(0,
+	    R_GetWallTexture2D(toptexture),
+	    textureheight[toptexture] >> FRACBITS,
+	    R_GetTextureWidthMask(toptexture), rw_toptexturemid);
+    if (bottomtexture)
+	*tier_bottom = R_GPU_WallTierBegin(1,
+	    R_GetWallTexture2D(bottomtexture),
+	    textureheight[bottomtexture] >> FRACBITS,
+	    R_GetTextureWidthMask(bottomtexture), rw_bottomtexturemid);
+}
+
 static void R_DrawSegColumn(int x, byte **columns, int widthmask,
                             fixed_t texturecolumn,
                             fixed_t texturemid, int yl, int yh,
@@ -289,7 +328,10 @@ typedef struct
     uint8_t light[WALL_COLUMN_BATCH_LANES];
 } wall_column_batch_t;
 
-OF_FASTTEXT static void R_FlushWallColumnBatch(wall_column_batch_t *batch)
+/* Not OF_FASTTEXT: mostly calls into regular-.text GPU emitters, and on
+ * param-wall cores it only runs for fallback tiers — APP_BRAM is better
+ * spent on the per-column loops. */
+static void R_FlushWallColumnBatch(wall_column_batch_t *batch)
 {
     if (batch->lanes <= 0)
 	return;
@@ -424,6 +466,9 @@ OF_FASTTEXT void R_RenderSegLoop (void)
     int			bottom_widthmask;
     wall_column_batch_t upper_batch;
     wall_column_batch_t lower_batch;
+    int			gpu_tier_mid;
+    int			gpu_tier_top;
+    int			gpu_tier_bottom;
     unsigned int        perf_start;
 
     perf_start = R_PERF_DETAIL_BEGIN();
@@ -471,6 +516,9 @@ OF_FASTTEXT void R_RenderSegLoop (void)
 	bottom_columns = R_GetColumnTable(bottomtexture);
 	bottom_widthmask = R_GetTextureWidthMask(bottomtexture);
     }
+
+    R_GPUWallTiersBegin(x, stopx, scale, scalestep,
+			&gpu_tier_mid, &gpu_tier_top, &gpu_tier_bottom);
 
     for ( ; x < stopx ; x++)
     {
@@ -523,15 +571,20 @@ OF_FASTTEXT void R_RenderSegLoop (void)
 	    // single sided line
 	    if (yl <= yh)
 	    {
-		texturecolumn = R_TextureColumnForX(x);
-		texturecolumn_ready = true;
-		R_PrepareDrawColumn(scale, &iscale, &lightrow,
-				    &column_colormap);
-		drawcolumn_ready = true;
-		R_AddWallColumnBatch(&upper_batch, x, mid_columns,
-				     mid_widthmask, texturecolumn,
-				     rw_midtexturemid, yl, yh, iscale,
-				     lightrow, column_colormap);
+		if (!gpu_tier_mid
+		    || !R_GPU_WallTierColumn(0, x, yl, yh,
+					     scale))
+		{
+		    texturecolumn = R_TextureColumnForX(x);
+		    texturecolumn_ready = true;
+		    R_PrepareDrawColumn(scale, &iscale, &lightrow,
+					&column_colormap);
+		    drawcolumn_ready = true;
+		    R_AddWallColumnBatch(&upper_batch, x, mid_columns,
+					 mid_widthmask, texturecolumn,
+					 rw_midtexturemid, yl, yh, iscale,
+					 lightrow, column_colormap);
+		}
 	    }
 	    ceiling_clip[x] = viewheight;
 	    floor_clip[x] = -1;
@@ -550,21 +603,27 @@ OF_FASTTEXT void R_RenderSegLoop (void)
 
 		if (mid >= yl)
 		{
-		    if (!texturecolumn_ready)
+		    if (!gpu_tier_top
+			|| !R_GPU_WallTierColumn(0, x, yl, mid,
+						 scale))
 		    {
-			texturecolumn = R_TextureColumnForX(x);
-			texturecolumn_ready = true;
+			if (!texturecolumn_ready)
+			{
+			    texturecolumn = R_TextureColumnForX(x);
+			    texturecolumn_ready = true;
+			}
+			if (!drawcolumn_ready)
+			{
+			    R_PrepareDrawColumn(scale, &iscale, &lightrow,
+						&column_colormap);
+			    drawcolumn_ready = true;
+			}
+			R_AddWallColumnBatch(&upper_batch, x, top_columns,
+					     top_widthmask, texturecolumn,
+					     rw_toptexturemid, yl, mid,
+					     iscale, lightrow,
+					     column_colormap);
 		    }
-		    if (!drawcolumn_ready)
-		    {
-			R_PrepareDrawColumn(scale, &iscale, &lightrow,
-					    &column_colormap);
-			drawcolumn_ready = true;
-		    }
-		    R_AddWallColumnBatch(&upper_batch, x, top_columns,
-					 top_widthmask, texturecolumn,
-					 rw_toptexturemid, yl, mid,
-					 iscale, lightrow, column_colormap);
 		    ceiling_clip[x] = mid;
 		}
 		else
@@ -589,21 +648,27 @@ OF_FASTTEXT void R_RenderSegLoop (void)
 		
 		if (mid <= yh)
 		{
-		    if (!texturecolumn_ready)
+		    if (!gpu_tier_bottom
+			|| !R_GPU_WallTierColumn(1, x, mid, yh,
+						 scale))
 		    {
-			texturecolumn = R_TextureColumnForX(x);
-			texturecolumn_ready = true;
+			if (!texturecolumn_ready)
+			{
+			    texturecolumn = R_TextureColumnForX(x);
+			    texturecolumn_ready = true;
+			}
+			if (!drawcolumn_ready)
+			{
+			    R_PrepareDrawColumn(scale, &iscale, &lightrow,
+						&column_colormap);
+			    drawcolumn_ready = true;
+			}
+			R_AddWallColumnBatch(&lower_batch, x, bottom_columns,
+					     bottom_widthmask, texturecolumn,
+					     rw_bottomtexturemid, mid, yh,
+					     iscale, lightrow,
+					     column_colormap);
 		    }
-		    if (!drawcolumn_ready)
-		    {
-			R_PrepareDrawColumn(scale, &iscale, &lightrow,
-					    &column_colormap);
-			drawcolumn_ready = true;
-		    }
-		    R_AddWallColumnBatch(&lower_batch, x, bottom_columns,
-					 bottom_widthmask, texturecolumn,
-					 rw_bottomtexturemid, mid, yh,
-					 iscale, lightrow, column_colormap);
 		    floor_clip[x] = mid;
 		}
 		else
@@ -634,6 +699,7 @@ OF_FASTTEXT void R_RenderSegLoop (void)
 	bottomf += bottom_step;
     }
 
+    R_GPU_WallTiersEnd();
     R_FlushWallColumnBatch(&upper_batch);
     R_FlushWallColumnBatch(&lower_batch);
 

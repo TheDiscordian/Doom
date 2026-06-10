@@ -20,6 +20,7 @@
 #include "deh_str.h"
 #include "i_system.h"
 #include "r_local.h"
+#include "r_gpu.h"
 
 planefunction_t floorfunc, ceilingfunc;
 
@@ -59,6 +60,7 @@ int spanstop[SCREENHEIGHT];
 // texture mapping
 //
 lighttable_t **planezlight;
+byte *planezlightrow;
 fixed_t planeheight;
 
 fixed_t yslope[SCREENHEIGHT];
@@ -145,6 +147,29 @@ void R_MapPlane(int y, int x1, int x2)
         distance = cacheddistance[y];
         ds_xstep = cachedxstep[y];
         ds_ystep = cachedystep[y];
+    }
+
+    // Param-record visplane path: the GPU evaluates the perspective
+    // planes itself, so the span reduces to a {x1, y, count} record and
+    // the per-span length/angle/frac math below is skipped entirely.
+    if (spanfunc == R_DrawSpan)
+    {
+        int gpu_light;
+
+        if (fixedcolormap)
+        {
+            gpu_light = -1;
+        }
+        else
+        {
+            index = distance >> LIGHTZSHIFT;
+            if (index >= MAXLIGHTZ)
+                index = MAXLIGHTZ - 1;
+            gpu_light = planezlightrow[index];
+        }
+
+        if (R_GPU_PlaneSpanLight(y, x1, x2, gpu_light))
+            return;
     }
 
     length = FixedMul(distance, distscale[x1]);
@@ -370,6 +395,7 @@ void R_MakeSpans(int x, int t1, int b1, int t2, int b2)
 
 void R_DrawPlanes(void)
 {
+    boolean gpu_plane;
     visplane_t *pl;
     int light;
     int x, stop;
@@ -497,6 +523,26 @@ void R_DrawPlanes(void)
         if (light < 0)
             light = 0;
         planezlight = zlight[light];
+        planezlightrow = zlightrow[light];
+
+        // Param-record visplane path: derive the perspective planes once,
+        // then R_MapPlane submits bare span records (openfpgaOS).
+        gpu_plane = false;
+        if (spanfunc == R_DrawSpan)
+        {
+            int fixed_row = -1;
+
+            if (fixedcolormap)
+                fixed_row = R_GPU_ColormapRow((const byte *) fixedcolormap);
+
+            if (!fixedcolormap || fixed_row >= 0)
+            {
+                gpu_plane = R_GPU_BeginPlaneSpans(ds_source,
+                                                  pl->height - viewz,
+                                                  fixedcolormap ? fixed_row
+                                                                : -1);
+            }
+        }
 
         pl->top[pl->maxx + 1] = 0xff;
         pl->top[pl->minx - 1] = 0xff;
@@ -506,6 +552,10 @@ void R_DrawPlanes(void)
             R_MakeSpans(x, pl->top[x - 1], pl->bottom[x - 1], pl->top[x],
                         pl->bottom[x]);
 
-        W_ReleaseLumpNum(lumpnum);
+        if (gpu_plane)
+            R_GPU_EndPlaneSpans();
+
+        if (!R_GPU_DeferLumpRelease(lumpnum))
+            W_ReleaseLumpNum(lumpnum);
     }
 }

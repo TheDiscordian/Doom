@@ -27,6 +27,7 @@
 #include "config.h"
 #include "ct_chat.h"
 #include "doomdef.h"
+#include "r_gpu.h"
 #include "deh_main.h"
 #include "d_iwad.h"
 #include "i_endoom.h"
@@ -149,6 +150,9 @@ void D_Display(void)
         R_ExecuteSetViewSize();
     }
 
+    // Acquire the GPU draw buffer for this display frame (openfpgaOS).
+    R_GPU_BeginDisplayFrame();
+
 //
 // do buffered drawing
 //
@@ -160,9 +164,21 @@ void D_Display(void)
             if (automapactive)
                 AM_Drawer();
             else
+            {
+                R_GPU_BeginFrame();
                 R_RenderPlayerView(&players[displayplayer]);
+            }
             CT_Drawer();
             UpdateState |= I_FULLVIEW;
+            // Direct-FB triple buffering: the HUD must land in EVERY
+            // flip buffer, so change-only redraw logic shows stale
+            // buffers two frames out of three (HUD flashing).  Force a
+            // full statusbar + border redraw per frame (openfpgaOS).
+            if (R_GPU_UsingDirectFramebuffer())
+            {
+                SB_state = -1;
+                BorderNeedRefresh = true;
+            }
             SB_Drawer();
             break;
         case GS_INTERMISSION:

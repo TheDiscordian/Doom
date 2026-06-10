@@ -4,7 +4,9 @@
 // those groups to the unified GPU_CMD_DRAW_PARAM_SPAN_LIST command.
 //
 // The SDK GPU header owns static mutable ring state, so this is the only
-// Doom translation unit that includes of_gpu.h.
+// Heretic translation unit that includes of_gpu.h.  Ported from the Doom
+// core renderer (cdoom/doom/r_gpu.c); the TINTTAB upload and TL column
+// path are the Raven-specific additions.
 //
 
 #include "config.h"
@@ -15,7 +17,6 @@
 #include "r_gpu.h"
 #include "r_local.h"
 #include "r_perf.h"
-#include "r_state.h"
 #include "w_wad.h"
 
 #include <stddef.h>
@@ -63,6 +64,9 @@ boolean R_GPU_DrawColumnDirect(int x, int yl, int yh, const byte *source,
     (void)colormap;
     return false;
 }
+boolean R_GPU_DrawTLColumn(void) { return false; }
+boolean R_GPU_TLEnabled(void) { return false; }
+void R_GPU_TLSpriteSync(void) { }
 boolean R_GPU_CanDrawFuzz(void) { return false; }
 boolean R_GPU_BeginFuzzSpans(void) { return false; }
 void R_GPU_EndFuzzSpans(void) { }
@@ -209,24 +213,16 @@ void R_GPU_WallTiersEnd(void) { }
 boolean R_GPU_SpriteBegin(const byte *tex2d, int tex_height, int tex_width,
                           fixed_t texturemid, fixed_t iscale,
                           fixed_t startfrac, fixed_t xiscale, int x1,
-                          int light)
+                          int light, boolean translucent)
 {
-    (void)tex2d;
-    (void)tex_height;
-    (void)tex_width;
-    (void)texturemid;
-    (void)iscale;
-    (void)startfrac;
-    (void)xiscale;
-    (void)x1;
-    (void)light;
+    (void)tex2d; (void)tex_height; (void)tex_width; (void)texturemid;
+    (void)iscale; (void)startfrac; (void)xiscale; (void)x1;
+    (void)light; (void)translucent;
     return false;
 }
 boolean R_GPU_SpritePost(int x, int yl, int yh)
 {
-    (void)x;
-    (void)yl;
-    (void)yh;
+    (void)x; (void)yl; (void)yh;
     return false;
 }
 void R_GPU_SpriteEnd(void) { }
@@ -289,6 +285,7 @@ static int gpu_affine_batch_is_column;
 static of_gpu_column_list_group_t gpu_column_batch;
 static int gpu_column_batch_count;
 static int gpu_use_column_list;
+static int gpu_tl_disabled;     /* -nogputl: TL columns stay on the CPU */
 /* Param-record visplane batch (ATTR_PERSP_Q29): planes built once per
  * visplane, records appended per span, one command per light band.
  * R_MakeSpans interleaves top-cursor and bottom-cursor rows — usually in
@@ -337,13 +334,15 @@ static float gpu_wall_szi_org, gpu_wall_szi_du;   /* texcol*zi(x), un-rebased */
 static float gpu_wall_texcol1;                    /* texcol at seg x1 (texels) */
 static int gpu_use_wall_param;
 /* Affine sprite batch (ATTR_AFFINE, AXIS_Y): single light per sprite,
- * one record per visible post.  Only non-empty between SpriteBegin/End. */
+ * one record per visible post; ghosts add OF_GPU_SPAN_TRANSLUC.  Only
+ * non-empty between SpriteBegin/End. */
 #define GPU_SPRITE_MAX_RECORDS 256
 static of_gpu_param_span_list_t gpu_sprite_params;
 static of_gpu_param_span_record_t gpu_sprite_records[GPU_SPRITE_MAX_RECORDS];
 static int gpu_sprite_record_count;
 static int gpu_sprite_active;
 static int gpu_use_sprite_param;
+
 static uint32_t gpu_fb_row_addr[SCREENHEIGHT];
 static uint32_t gpu_cpu_dirty_lines[GPU_FB_CACHE_WORDS];
 static uint32_t gpu_cpu_valid_lines[GPU_FB_CACHE_WORDS];
@@ -973,6 +972,7 @@ static void gpu_flush_wall_batch(void)
             gpu_flush_wall_band(&gpu_wall_tiers[t], &gpu_wall_tiers[t].bands[b]);
 }
 
+
 static void gpu_flush_sprite_batch(void)
 {
     int n = gpu_sprite_record_count;
@@ -1417,19 +1417,19 @@ int R_GPU_ColormapRow(const byte *map)
     return gpu_colormap_row((const lighttable_t *)map);
 }
 
-static void gpu_upload_fuzz_translucency(void)
+static void gpu_upload_tinttable(void)
 {
-    const byte *darkmap;
-    int row;
-
-    if (colormaps == NULL || gpu_colormap_rows <= 0)
+    /* The GPU blend LUT is indexed [shaded_src][fb_byte]; Heretic's
+     * TINTTAB is [fb_byte][shaded_src] - upload the transpose.  The RTL
+     * quantises the source axis to 7 bits (low bit dropped), so TL
+     * blends are sub-JND approximate rather than byte-exact. */
+    if (tinttable == NULL)
         return;
 
-    row = gpu_colormap_rows > 6 ? 6 : 0;
-    darkmap = colormaps + row * 256;
-
     for (int src = 0; src < 256; src++)
-        memcpy(gpu_fuzz_transluc_table + src * 256, darkmap, 256);
+        for (int dst = 0; dst < 256; dst++)
+            gpu_fuzz_transluc_table[src * 256 + dst] =
+                tinttable[dst * 256 + src];
 
     of_gpu_translucency_upload(gpu_fuzz_transluc_table,
                                sizeof(gpu_fuzz_transluc_table));
@@ -1609,6 +1609,8 @@ void R_GPU_Init(void)
     }
     gpu_reset_cpu_cache_tracking();
 
+    gpu_tl_disabled = M_CheckParm("-nogputl") > 0;
+
     if (!r_gpu_enabled || M_CheckParm("-nogpu") > 0)
     {
         printf("Doom GPU: renderer disabled; using software renderer\n");
@@ -1671,30 +1673,15 @@ void R_GPU_Init(void)
         gpu_use_param_span = 1;
         printf("Doom GPU: param-span visplane path (PERSP_Q29) enabled\n");
 
-        /* Walls additionally need vertical (AXIS_Y) record walking.
-         * -nogpuwalls / -nogpusprites bisect the new param paths on
-         * hardware without a rebuild. */
+        /* Walls additionally need vertical (AXIS_Y) record walking. */
         if (gpu_probe_param_axis_y())
         {
-            if (M_CheckParm("-nogpuwalls") > 0)
-            {
-                printf("Doom GPU: param-wall path disabled (-nogpuwalls)\n");
-            }
-            else
-            {
-                gpu_use_wall_param = 1;
-                printf("Doom GPU: param-wall path (AXIS_Y) enabled\n");
-            }
-
+            gpu_use_wall_param = 1;
             if (M_CheckParm("-nogpusprites") > 0)
-            {
-                printf("Doom GPU: affine-sprite path disabled (-nogpusprites)\n");
-            }
+                gpu_use_sprite_param = 0;
             else
-            {
                 gpu_use_sprite_param = 1;
-                printf("Doom GPU: affine-sprite path (ATTR_AFFINE) enabled\n");
-            }
+            printf("Doom GPU: param-wall path (AXIS_Y) enabled\n");
         }
     }
 
@@ -1709,7 +1696,7 @@ void R_GPU_Init(void)
      * Doom's palette remap rows into the fabric palookup table. */
     of_cache_flush();
     gpu_upload_palookup(0, colormaps, (uint32_t)cmap_size);
-    gpu_upload_fuzz_translucency();
+    gpu_upload_tinttable();
     of_cache_flush_range(gpu_fuzz_source_tex, sizeof(gpu_fuzz_source_tex));
     GPU_TEX_FLUSH = 1;
 
@@ -2022,6 +2009,56 @@ boolean R_GPU_DrawColumnDirect(int x, int yl, int yh, const byte *source,
     int light = gpu_colormap_row((const lighttable_t *)colormap);
     return R_GPU_DrawColumnLightDirect(x, yl, yh, source, texturemid, iscale,
                                        light);
+}
+
+boolean R_GPU_TLEnabled(void)
+{
+    return gpu_present && !gpu_tl_disabled;
+}
+
+void R_GPU_TLSpriteSync(void)
+{
+    if (!gpu_present || !gpu_frame_active)
+        return;
+
+    /* Retire all staged work (and its framebuffer writes) so the TL
+     * columns' per-pixel FB reads see final SDRAM content. */
+    gpu_finish_pending();
+}
+
+boolean R_GPU_DrawTLColumn(void)
+{
+    int light;
+
+    if (gpu_tl_disabled)
+        return false;
+
+    light = gpu_colormap_row(dc_colormap);
+    int count = dc_yh - dc_yl + 1;
+    int screen_x = dc_x + viewwindowx;
+    int screen_yl = dc_yl + viewwindowy;
+    int screen_yh = dc_yh + viewwindowy;
+
+    if (!gpu_present || !gpu_frame_active || I_VideoBuffer == NULL)
+        return false;
+    if (tinttable == NULL)
+        return false;
+    if (light < 0 || light > 63)
+        return false;
+    if (screen_x < 0 || screen_x >= SCREENWIDTH ||
+        screen_yl < 0 || screen_yh >= SCREENHEIGHT)
+        return false;
+    if (count <= 0 || count > 4095 || dc_source == NULL)
+        return false;
+
+    gpu_add_column(screen_x, screen_yl, count, dc_source,
+                   gpu_column_t_start_direct(dc_yl, dc_texturemid, dc_iscale),
+                   dc_iscale, (uint8_t)light,
+                   OF_GPU_SPAN_COLORMAP | OF_GPU_SPAN_TRANSLUC, 0,
+                   1, 0, 127);
+
+    R_Perf_CountGpuColumn((unsigned int)count);
+    return true;
 }
 
 static boolean gpu_can_draw_fuzz(void)
@@ -2652,7 +2689,7 @@ void R_GPU_WallTiersEnd(void)
 boolean R_GPU_SpriteBegin(const byte *tex2d, int tex_height, int tex_width,
                           fixed_t texturemid, fixed_t iscale,
                           fixed_t startfrac, fixed_t xiscale, int x1,
-                          int light)
+                          int light, boolean translucent)
 {
     /* Shares the AXIS_Y walker the wall probe validated. */
     if (!gpu_use_sprite_param || !gpu_present || !gpu_frame_active ||
@@ -2661,6 +2698,8 @@ boolean R_GPU_SpriteBegin(const byte *tex2d, int tex_height, int tex_width,
     if (tex2d == NULL || light < 0 || light > 63)
         return false;
     if (tex_height <= 0 || tex_height > 0xFFFF || tex_width <= 0)
+        return false;
+    if (translucent && (gpu_tl_disabled || tinttable == NULL))
         return false;
 
     if (!gpu_write_prepared)
@@ -2680,12 +2719,14 @@ boolean R_GPU_SpriteBegin(const byte *tex2d, int tex_height, int tex_width,
     gpu_sprite_params.tex_w_mask = 0xFFFF;  /* ranges enforced by clamps */
     gpu_sprite_params.tex_h_mask = 0xFFFF;
     gpu_sprite_params.flags = OF_GPU_SPAN_COLORMAP;
+    if (translucent)
+        gpu_sprite_params.flags |= OF_GPU_SPAN_TRANSLUC;
     gpu_sprite_params.colormap_id = 0;
     gpu_sprite_params.attr_mode = OF_GPU_PARAM_ATTR_AFFINE;
     gpu_sprite_params.span_axis = OF_GPU_PARAM_AXIS_Y;
     gpu_sprite_params.z_mode = OF_GPU_PARAM_Z_NONE;
 
-    /* Exact Q16.16 planes — identical integer math to the software
+    /* Exact Q16.16 planes - identical integer math to the software
      * column walk (32-bit wrap included), so output is bit-exact.
      * attr0 = vtex (along column), attr1 = sprite column. */
     gpu_sprite_params.attr_origin[0] =
@@ -2697,8 +2738,6 @@ boolean R_GPU_SpriteBegin(const byte *tex2d, int tex_height, int tex_width,
     gpu_sprite_params.attr_du[1] = xiscale;
     gpu_sprite_params.attr_dv[1] = 0;
 
-    /* Boundary roundings clamp to the sprite box instead of sampling
-     * out of the block. */
     gpu_sprite_params.clamp_min[0] = 0;
     gpu_sprite_params.clamp_max[0] = ((int32_t)tex_height << 16) - 1;
     gpu_sprite_params.clamp_min[1] = 0;
@@ -2748,11 +2787,16 @@ void R_GPU_SpriteEnd(void)
 }
 
 
-/* Bracket a CPU-drawn sprite (translated columns in MP have no GPU
+/* Bracket a CPU-drawn sprite (translated / alt-TL columns have no GPU
  * path) so its cached framebuffer writes stay coherent with the GPU
- * work around it: without this the CPU columns reach SDRAM only on
- * random cache eviction — late evictions stamp stale 64-byte lines
- * over GPU pixels, unevicted lines vanish (horizontal banding). */
+ * work around it.  Without this, the CPU columns sit in cache lines
+ * that flush to SDRAM only on random eviction: lines evicted late
+ * overwrite GPU-drawn pixels with stale 64-byte snapshots, lines never
+ * evicted simply vanish — both show up as horizontal banding.  Begin
+ * drains the GPU and drops stale CPU lines over the view rows; End
+ * pushes the sprite's pixels out immediately and leaves the lines
+ * clean, so later GPU sprites can overdraw them and nothing stale is
+ * flushed at present time. */
 static uint8_t *gpu_cpu_sprite_band(uint32_t *size)
 {
     uint8_t *base = gpu_draw_render_base != NULL

@@ -21,6 +21,7 @@
 #include "i_swap.h"
 #include "i_system.h"
 #include "r_local.h"
+#include "r_gpu.h"
 
 typedef struct
 {
@@ -342,10 +343,18 @@ void R_DrawMaskedColumn(column_t * column, signed int baseclip)
 
         if (dc_yl <= dc_yh)
         {
-            dc_source = (byte *) column + 3;
-            dc_texturemid = basetexturemid - (column->topdelta << FRACBITS);
-//                      dc_source = (byte *)column + 3 - column->topdelta;
-            colfunc();          // either R_DrawColumn or R_DrawTLColumn
+            // Affine sprite surface: the post reduces to a {x, ytop,
+            // count} record (active only between SpriteBegin/End).
+            if (R_GPU_SpritePost(dc_x, dc_yl, dc_yh))
+            {
+                /* recorded */
+            }
+            else
+            {
+                dc_source = (byte *) column + 3;
+                dc_texturemid = basetexturemid - (column->topdelta << FRACBITS);
+                colfunc();      // either R_DrawColumn or R_DrawTLColumn
+            }
         }
         column = (column_t *) ((byte *) column + column->length + 4);
     }
@@ -365,6 +374,8 @@ void R_DrawMaskedColumn(column_t * column, signed int baseclip)
 
 void R_DrawVisSprite(vissprite_t * vis, int x1, int x2)
 {
+    boolean cpu_sprite;
+    boolean sprite_gpu;
     column_t *column;
     int texturecolumn;
     fixed_t frac;
@@ -372,7 +383,11 @@ void R_DrawVisSprite(vissprite_t * vis, int x1, int x2)
     fixed_t baseclip;
 
 
-    patch = W_CacheLumpNum(vis->patch + firstspritelump, PU_CACHE);
+    /* PU_LEVEL, not PU_CACHE: the GPU consumes staged commands that
+     * reference this patch's post data up to a frame later, and a
+     * PU_CACHE purge can reuse the memory under them (drops sprite
+     * spans).  Same residency policy as the Doom core. */
+    patch = W_CacheLumpNum(vis->patch + firstspritelump, PU_LEVEL);
 
     dc_colormap = vis->colormap;
 
@@ -427,6 +442,42 @@ void R_DrawVisSprite(vissprite_t * vis, int x1, int x2)
         baseclip = -1;
     }
 
+    // CPU-drawn sprite (translated columns): keep its cached FB
+
+    // writes coherent with surrounding GPU work (openfpgaOS).
+
+    cpu_sprite = (colfunc != basecolfunc)
+        && (colfunc != tlcolfunc || !R_GPU_TLEnabled());
+    if (colfunc == tlcolfunc && R_GPU_TLEnabled())
+        R_GPU_TLSpriteSync();
+
+    // Affine sprite surface: one param command for the whole sprite;
+    // the post walk only appends records (openfpgaOS).
+    sprite_gpu = false;
+    if (!cpu_sprite)
+    {
+        int slight = R_GPU_ColormapRow((const byte *) dc_colormap);
+
+        if (slight >= 0)
+        {
+            const byte *tex2d = R_GetSpriteTexture2D(vis->patch);
+
+            if (tex2d != NULL)
+                sprite_gpu = R_GPU_SpriteBegin(tex2d,
+                                               SHORT(patch->height),
+                                               SHORT(patch->width),
+                                               dc_texturemid, dc_iscale,
+                                               vis->startfrac, vis->xiscale,
+                                               vis->x1, slight,
+                                               colfunc == tlcolfunc);
+        }
+    }
+
+    if (cpu_sprite)
+
+        R_GPU_BeginCPUSprite();
+
+
     for (dc_x = vis->x1; dc_x <= vis->x2; dc_x++, frac += vis->xiscale)
     {
         texturecolumn = frac >> FRACBITS;
@@ -438,6 +489,12 @@ void R_DrawVisSprite(vissprite_t * vis, int x1, int x2)
                                LONG(patch->columnofs[texturecolumn]));
         R_DrawMaskedColumn(column, baseclip);
     }
+
+    if (sprite_gpu)
+        R_GPU_SpriteEnd();
+
+    if (cpu_sprite)
+        R_GPU_EndCPUSprite();
 
     colfunc = basecolfunc;
 }

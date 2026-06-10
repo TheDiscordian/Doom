@@ -34,6 +34,15 @@ R_GetColumn
 byte **R_GetColumnTable(int tex);
 int R_GetTextureWidthMask(int tex);
 
+// Contiguous column-major 2D block for the GPU param-wall path
+// (column x at block + x*texheight).  NULL when over the per-level
+// cache budget — caller falls back to column emission.
+byte *R_GetWallTexture2D(int texnum);
+
+// Flat 2D sprite block (column-major, stride = patch height) for the
+// GPU affine-sprite path.  spritelump is vis->patch (relative index).
+byte *R_GetSpriteTexture2D(int spritelump);
+
 
 // I/O, setting up the stuff.
 void R_InitData (void);

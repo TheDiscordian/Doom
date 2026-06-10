@@ -18,6 +18,7 @@
 // HEADER FILES ------------------------------------------------------------
 
 #include "h2def.h"
+#include "r_gpu.h"
 #include "i_system.h"
 #include "i_video.h"
 #include "p_local.h"
@@ -169,6 +170,7 @@ static void TextWrite(void)
     int cx, cy;
     patch_t *w;
 
+    R_GPU_PrepareForCPUAccess();
     memcpy(I_VideoBuffer, W_CacheLumpNum(FinaleLumpNum, PU_CACHE),
            SCREENWIDTH * SCREENHEIGHT);
     if (FinaleStage == 5)
@@ -310,6 +312,7 @@ static void FadePic(void)
 
 static void DrawPic(void)
 {
+    R_GPU_PrepareForCPUAccess();
     memcpy(I_VideoBuffer, W_CacheLumpNum(FinaleLumpNum, PU_CACHE),
            SCREENWIDTH * SCREENHEIGHT);
     if (FinaleStage == 4 || FinaleStage == 5)

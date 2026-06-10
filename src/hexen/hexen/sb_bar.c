@@ -18,6 +18,7 @@
 // HEADER FILES ------------------------------------------------------------
 
 #include "h2def.h"
+#include "r_gpu.h"
 #include "i_cdmus.h"
 #include "i_video.h"
 #include "m_bbox.h"
@@ -593,6 +594,7 @@ static void ShadeLine(int x, int y, int height, int shade)
 	byte *shades;
 
 	shades = colormaps+9*256+shade*2*256;
+	R_GPU_PrepareForCPUAccessRect(x, y, 1, height);
 	dest = I_VideoBuffer+y*SCREENWIDTH+x;
 	while(height--)
 	{
@@ -1173,6 +1175,7 @@ void DrawMainBar(void)
         V_DrawPatch(77, 164, manaPatch1);
         V_DrawPatch(110, 164, manaPatch2);
         V_DrawPatch(94, 164, manaVialPatch1);
+        R_GPU_PrepareForCPUAccessRect(95, 165, 11, 22);
         for (i = 165; i < 187 - (22 * CPlayer->mana[0]) / MAX_MANA; i++)
         {
             I_VideoBuffer[i * SCREENWIDTH + 95] = 0;

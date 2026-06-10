@@ -18,6 +18,7 @@
 #include "h2def.h"
 #include "i_system.h"
 #include "r_local.h"
+#include "r_gpu.h"
 
 // OPTIMIZE: closed two sided lines as single sided
 
@@ -54,6 +55,7 @@ fixed_t bottomfrac, bottomstep;
 
 
 lighttable_t **walllights;
+byte *walllightrows;
 
 short *maskedtexturecol;
 
@@ -89,9 +91,15 @@ void R_RenderMaskedSegRange(drawseg_t * ds, int x1, int x2)
     //if (lightnum < 0)
     //      walllights = scalelight[0];
     if (lightnum >= LIGHTLEVELS)
+    {
         walllights = scalelight[LIGHTLEVELS - 1];
+        walllightrows = scalelightrow[LIGHTLEVELS - 1];
+    }
     else
+    {
         walllights = scalelight[lightnum];
+        walllightrows = scalelightrow[lightnum];
+    }
 
     maskedtexturecol = ds->maskedtexturecol;
 
@@ -175,8 +183,39 @@ void R_RenderSegLoop(void)
     int yl, yh, mid;
     fixed_t texturecolumn;
     int top, bottom;
+    int gpu_tier_mid, gpu_tier_top, gpu_tier_bottom;
+    int texready, drawprep;
 
     texturecolumn = 0;           // shut up compiler warning
+
+    // Param-wall path: the GPU evaluates the wall's perspective planes,
+    // so each tier column reduces to a {x, ytop, count} record and the
+    // per-column texturecolumn/division/lighting math is skipped
+    // (openfpgaOS).  Tiers without a flat 2D block keep column drawing.
+    gpu_tier_mid = 0;
+    gpu_tier_top = 0;
+    gpu_tier_bottom = 0;
+    if (detailshift == 0 && colfunc == basecolfunc
+        && (midtexture || toptexture || bottomtexture)
+        && R_GPU_WallSegBegin(rw_x, rw_stopx - 1, rw_scale, rw_scalestep,
+                              rw_distance, rw_offset, rw_centerangle))
+    {
+        if (midtexture)
+            gpu_tier_mid = R_GPU_WallTierBegin(0,
+                R_GetWallTexture2D(midtexture),
+                textureheight[midtexture] >> FRACBITS,
+                texturewidthmask[midtexture], rw_midtexturemid);
+        if (toptexture)
+            gpu_tier_top = R_GPU_WallTierBegin(0,
+                R_GetWallTexture2D(toptexture),
+                textureheight[toptexture] >> FRACBITS,
+                texturewidthmask[toptexture], rw_toptexturemid);
+        if (bottomtexture)
+            gpu_tier_bottom = R_GPU_WallTierBegin(1,
+                R_GetWallTexture2D(bottomtexture),
+                textureheight[bottomtexture] >> FRACBITS,
+                texturewidthmask[bottomtexture], rw_bottomtexturemid);
+    }
 
     for (; rw_x < rw_stopx; rw_x++)
     {
@@ -218,32 +257,47 @@ void R_RenderSegLoop(void)
 //
 // texturecolumn and lighting are independent of wall tiers
 //
-        if (segtextured)
-        {
-            // calculate texture offset
-            angle = (rw_centerangle + xtoviewangle[rw_x]) >> ANGLETOFINESHIFT;
-            texturecolumn =
-                rw_offset - FixedMul(finetangent[angle], rw_distance);
-            texturecolumn >>= FRACBITS;
-            // calculate lighting
-            index = rw_scale >> LIGHTSCALESHIFT;
-            if (index >= MAXLIGHTSCALE)
-                index = MAXLIGHTSCALE - 1;
-            dc_colormap = walllights[index];
-            dc_x = rw_x;
-            dc_iscale = 0xffffffffu / (unsigned) rw_scale;
-        }
+//
+// texturecolumn and lighting are computed lazily: param-wall columns
+// need neither, masked storage needs only texturecolumn (openfpgaOS)
+//
+        texready = 0;
+        drawprep = 0;
+
+#define R_SEG_TEXCOL() \
+        do { if (!texready) { \
+            angle = (rw_centerangle + xtoviewangle[rw_x]) >> ANGLETOFINESHIFT; \
+            texturecolumn = \
+                rw_offset - FixedMul(finetangent[angle], rw_distance); \
+            texturecolumn >>= FRACBITS; \
+            texready = 1; } } while (0)
+
+#define R_SEG_DRAWPREP() \
+        do { if (!drawprep) { \
+            index = rw_scale >> LIGHTSCALESHIFT; \
+            if (index >= MAXLIGHTSCALE) \
+                index = MAXLIGHTSCALE - 1; \
+            dc_colormap = walllights[index]; \
+            dc_x = rw_x; \
+            dc_iscale = 0xffffffffu / (unsigned) rw_scale; \
+            drawprep = 1; } } while (0)
 
 //
 // draw the wall tiers
 //
         if (midtexture)
         {                       // single sided line
-            dc_yl = yl;
-            dc_yh = yh;
-            dc_texturemid = rw_midtexturemid;
-            dc_source = R_GetColumn(midtexture, texturecolumn);
-            colfunc();
+            if (!gpu_tier_mid
+                || !R_GPU_WallTierColumn(0, rw_x, yl, yh, rw_scale))
+            {
+                R_SEG_TEXCOL();
+                R_SEG_DRAWPREP();
+                dc_yl = yl;
+                dc_yh = yh;
+                dc_texturemid = rw_midtexturemid;
+                dc_source = R_GetColumn(midtexture, texturecolumn);
+                colfunc();
+            }
             ceilingclip[rw_x] = viewheight;
             floorclip[rw_x] = -1;
         }
@@ -257,11 +311,17 @@ void R_RenderSegLoop(void)
                     mid = floorclip[rw_x] - 1;
                 if (mid >= yl)
                 {
-                    dc_yl = yl;
-                    dc_yh = mid;
-                    dc_texturemid = rw_toptexturemid;
-                    dc_source = R_GetColumn(toptexture, texturecolumn);
-                    colfunc();
+                    if (!gpu_tier_top
+                        || !R_GPU_WallTierColumn(0, rw_x, yl, mid, rw_scale))
+                    {
+                        R_SEG_TEXCOL();
+                        R_SEG_DRAWPREP();
+                        dc_yl = yl;
+                        dc_yh = mid;
+                        dc_texturemid = rw_toptexturemid;
+                        dc_source = R_GetColumn(toptexture, texturecolumn);
+                        colfunc();
+                    }
                     ceilingclip[rw_x] = mid;
                 }
                 else
@@ -281,11 +341,17 @@ void R_RenderSegLoop(void)
                     mid = ceilingclip[rw_x] + 1;        // no space above wall
                 if (mid <= yh)
                 {
-                    dc_yl = mid;
-                    dc_yh = yh;
-                    dc_texturemid = rw_bottomtexturemid;
-                    dc_source = R_GetColumn(bottomtexture, texturecolumn);
-                    colfunc();
+                    if (!gpu_tier_bottom
+                        || !R_GPU_WallTierColumn(1, rw_x, mid, yh, rw_scale))
+                    {
+                        R_SEG_TEXCOL();
+                        R_SEG_DRAWPREP();
+                        dc_yl = mid;
+                        dc_yh = yh;
+                        dc_texturemid = rw_bottomtexturemid;
+                        dc_source = R_GetColumn(bottomtexture, texturecolumn);
+                        colfunc();
+                    }
                     floorclip[rw_x] = mid;
                 }
                 else
@@ -299,6 +365,7 @@ void R_RenderSegLoop(void)
 
             if (maskedtexture)
             {                   // save texturecol for backdrawing of masked mid texture
+                R_SEG_TEXCOL();
                 maskedtexturecol[rw_x] = texturecolumn;
             }
         }
@@ -308,6 +375,10 @@ void R_RenderSegLoop(void)
         bottomfrac += bottomstep;
     }
 
+#undef R_SEG_TEXCOL
+#undef R_SEG_DRAWPREP
+
+    R_GPU_WallTiersEnd();
 }
 
 
@@ -568,9 +639,15 @@ void R_StoreWallRange(int start, int stop)
             //if (lightnum < 0)
             //      walllights = scalelight[0];
             if (lightnum >= LIGHTLEVELS)
+            {
                 walllights = scalelight[LIGHTLEVELS - 1];
+                walllightrows = scalelightrow[LIGHTLEVELS - 1];
+            }
             else
+            {
                 walllights = scalelight[lightnum];
+                walllightrows = scalelightrow[lightnum];
+            }
         }
     }
 
